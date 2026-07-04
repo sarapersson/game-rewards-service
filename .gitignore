@@ -1,0 +1,21 @@
+# Build output
+bin/
+dist/
+tmp/
+
+# Test and coverage output
+coverage.out
+*.test
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
