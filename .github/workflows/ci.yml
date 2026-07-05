@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Show Go version
+        run: go version
+
+      - name: Check Go module tidiness
+        run: make mod-tidy-check
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Run go vet
+        run: make vet
+
+      - name: Run tests
+        run: make test
+
+      - name: Run race tests
+        run: make test-race
+
+      - name: Run vulnerability check
+        run: make vuln
+
+      - name: Build Docker image
+        run: make docker-build
