@@ -6,7 +6,7 @@ The project is built in slices and is intended to demonstrate production-minded 
 
 ## Status
 
-Slice 1: API scaffold.
+Slice 2: CI / repo hygiene.
 
 Implemented:
 
@@ -21,6 +21,9 @@ Implemented:
 * Unit tests
 * Makefile
 * Dockerfile
+* GitHub Actions CI
+* Formatting, module tidiness, vet, test, race, and Go vulnerability checks
+* Dependabot baseline for Go modules, GitHub Actions, and Docker
 
 Planned later:
 
@@ -33,7 +36,7 @@ Planned later:
 * Async worker
 * `/metrics`
 * Docker Compose
-* CI and security checks
+* Deeper security scanning and supply-chain hardening
 
 ## Requirements
 
@@ -55,17 +58,44 @@ curl -i http://localhost:8080/readyz
 
 ## Run tests
 
-Run the local pre-commit checks:
+Run fast local checks:
 
 ```bash
 make check
 ```
 
-Run the race-enabled test suite:
+Run the full Go CI check set locally:
 
 ```bash
-make test-race
+make ci
 ```
+
+Run individual checks:
+
+```bash
+make mod-tidy-check
+make fmt-check
+make vet
+make test
+make test-race
+make vuln
+```
+
+## CI
+
+GitHub Actions runs the baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
+
+The workflow uses least-privilege read-only repository permissions. It runs the same Go checks as `make ci` and also builds the local Docker image:
+
+* `make mod-tidy-check`
+* `make fmt-check`
+* `make vet`
+* `make test`
+* `make test-race`
+* `make vuln`
+* `make docker-build`
+
+The repository should be configured so changes to `main` go through pull requests with required passing CI checks.
 
 ## Build
 
@@ -82,7 +112,7 @@ make docker-build
 docker run --rm -p 8080:8080 game-rewards-service:local
 ```
 
-The image uses pinned base images and runs the API as a non-root user.
+The image uses versioned base images, avoids `latest` tags, and runs the API as a non-root user.
 
 ## Configuration
 
@@ -133,7 +163,7 @@ Status: `200 OK`
 }
 ```
 
-In Slice 1, readiness has no external dependency checks yet. PostgreSQL readiness will be added when persistence is introduced.
+At this stage, readiness has no external dependency checks yet. PostgreSQL readiness will be added when persistence is introduced.
 
 ### Request IDs
 
@@ -196,8 +226,8 @@ internal/httpapi
 Before committing a slice, run:
 
 ```bash
-make check
-make test-race
+git diff --check
+make ci
 make docker-build
 ```
 

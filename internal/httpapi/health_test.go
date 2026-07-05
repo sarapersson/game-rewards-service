@@ -57,7 +57,7 @@ func TestReadyzReturnsReady(t *testing.T) {
 	}
 
 	if len(body.Checks) != 0 {
-		t.Fatalf("expected no readiness checks in slice 1, got %d", len(body.Checks))
+		t.Fatalf("expected no readiness checks at this stage, got %d", len(body.Checks))
 	}
 }
 
