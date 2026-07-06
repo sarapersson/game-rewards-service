@@ -17,10 +17,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  go:
-    name: Go
+  checks:
+    name: Checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -52,26 +52,11 @@ jobs:
       - name: Show Go version
         run: go version
 
+      - name: Run checks
+        run: make check
+
       - name: Verify database migrations
         run: make db-check
-
-      - name: Check Go module tidiness
-        run: make mod-tidy-check
-
-      - name: Check formatting
-        run: make fmt-check
-
-      - name: Run go vet
-        run: make vet
-
-      - name: Run tests
-        run: make test
-
-      - name: Run race tests
-        run: make test-race
-
-      - name: Run vulnerability check
-        run: make vuln
 
       - name: Build Docker image
         run: make docker-build

@@ -15,13 +15,16 @@ This project is an early-stage portfolio service.
 * SQL migrations define schema-level constraints for critical invariants
 * The Docker container runs as a non-root user
 * Docker images use versioned base images and avoid `latest` tags
-* GitHub Actions CI uses least-privilege read-only repository permissions
-* CI runs formatting, module tidiness, vet, test, race, Go vulnerability checks, Docker build, and database migration verification
+* GitHub Actions workflows use least-privilege permissions
+* The CI workflow uses read-only repository permissions
+* The security workflow grants CodeQL only the permissions required to publish code scanning results
+* CI runs formatting, module tidiness, vet, tests, Docker build, and database migration verification
+* CodeQL and Go vulnerability checks run in a separate GitHub Actions security workflow
 * Dependabot is configured for Go modules, GitHub Actions, and Docker
 
 ## Current scope
 
-Slice 3 contains the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, PostgreSQL local development, SQL migrations, core database schema, and PostgreSQL-backed readiness checks.
+The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, PostgreSQL local development, SQL migrations, core database schema, PostgreSQL-backed readiness checks, CodeQL, and Go vulnerability checks.
 
 The core schema includes tables for reward claims, idempotency keys, and outbox events. The reward-claim API, idempotency behavior, transactional claim creation, transactional outbox writes, async worker, metrics, authentication, and external integrations are not implemented yet.
 

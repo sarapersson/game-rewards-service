@@ -37,7 +37,7 @@ vuln: ## Run govulncheck
 
 check: fmt-check mod-tidy-check vet test ## Run fast local checks
 
-ci: fmt-check mod-tidy-check vet test test-race vuln ## Run the full Go CI check set
+ci: fmt-check mod-tidy-check vet test test-race vuln ## Run the full local check set
 
 run: ## Run the API locally
 	go run ./cmd/api
