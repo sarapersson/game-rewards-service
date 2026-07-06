@@ -1,13 +1,13 @@
 # Security Notes
 
-This project is an early-stage portfolio service.
+This project is an early-stage backend service.
 
 ## Current baseline
 
 * Local `.env` files are ignored by Git
 * HTTP server timeouts are configured explicitly
 * Request IDs are bounded in length and restricted to a safe character set
-* Logs avoid request bodies, secrets, full idempotency keys, authorization headers, and sensitive runtime configuration
+* Application logging is designed to avoid request bodies, secrets, full idempotency keys, authorization headers, and sensitive runtime configuration
 * PostgreSQL is configured through `DATABASE_URL`
 * The local Docker Compose PostgreSQL credentials are development-only
 * `/readyz` checks PostgreSQL readiness without exposing raw database errors
@@ -18,13 +18,13 @@ This project is an early-stage portfolio service.
 * GitHub Actions workflows use least-privilege permissions
 * The CI workflow uses read-only repository permissions
 * The security workflow grants CodeQL only the permissions required to publish code scanning results
-* CI runs formatting, module tidiness, vet, tests, Docker build, and database migration verification
+* CI runs formatting, module tidiness, vet, tests, race tests, Docker build, and database migration verification
 * CodeQL and Go vulnerability checks run in a separate GitHub Actions security workflow
 * Dependabot is configured for Go modules, GitHub Actions, and Docker
 
 ## Current scope
 
-The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, PostgreSQL local development, SQL migrations, core database schema, PostgreSQL-backed readiness checks, CodeQL, and Go vulnerability checks.
+The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, CodeQL, and Go vulnerability checks.
 
 The core schema includes tables for reward claims, idempotency keys, and outbox events. The reward-claim API, idempotency behavior, transactional claim creation, transactional outbox writes, async worker, metrics, authentication, and external integrations are not implemented yet.
 
@@ -46,10 +46,16 @@ The repository should be configured so changes to `main` go through pull request
 
 Direct pushes, force pushes, and branch deletion should be disabled for `main`.
 
+## Supported versions
+
+This project does not have supported release versions yet.
+
+Security-related changes are made on the main branch as the project evolves.
+
 ## Security scope
 
-This repository is a portfolio project and reference implementation.
+This repository is not operated as a production service and does not process real user data.
 
-It is not operated as a production service, does not process real user data, and does not provide a formal vulnerability reporting or response process.
+There is no bug bounty program, vulnerability disclosure program, production incident response process, or service-level agreement for this project.
 
 Anyone adapting this code for their own use is responsible for reviewing, hardening, deploying, monitoring, and maintaining their own version.

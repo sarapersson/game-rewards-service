@@ -2,13 +2,13 @@
 
 A small Go backend service for an online gaming reward-claim platform.
 
-The project is built in slices and is intended to demonstrate production-minded backend engineering with a simple, readable design.
+The codebase is developed in small, reviewable slices with a focus on correctness, operability, and keeping the design easy to reason about.
 
 ## Status
 
-Slice 3.5: CodeQL + CI split.
+Current baseline: API scaffold, PostgreSQL migrations, CI, and security scanning.
 
-Implemented:
+Current baseline includes:
 
 * HTTP server using Go standard library
 * `/livez` and `/readyz`
@@ -27,12 +27,12 @@ Implemented:
 * Makefile
 * Dockerfile
 * GitHub Actions CI
-* Fast CI checks for formatting, module tidiness, vet, tests, migrations, and Docker builds
+* Baseline CI checks for formatting, module tidiness, vet, tests, race tests, migrations, and Docker builds
 * Separate security workflow for CodeQL code scanning and Go vulnerability checks
 * GitHub Actions concurrency cancellation for superseded workflow runs
 * Dependabot baseline for Go modules, GitHub Actions, and Docker
 
-Planned later:
+Planned work:
 
 * `POST /v1/reward-claims`
 * Idempotency behavior with `Idempotency-Key`
@@ -40,7 +40,7 @@ Planned later:
 * Transactional outbox writes
 * Async worker
 * `/metrics`
-* Additional supply-chain hardening
+* Container scanning and SBOM generation
 
 ## Requirements
 
@@ -61,6 +61,8 @@ Run the API:
 ```bash
 make run
 ```
+
+The API fails fast on startup if PostgreSQL cannot be reached. After startup, `/readyz` reports dependency readiness and returns `503` if PostgreSQL becomes unavailable.
 
 Health checks:
 
@@ -118,7 +120,7 @@ Verify migrations can apply, roll back, and re-apply:
 make db-check
 ```
 
-`db-check` applies migrations, rolls them back, and applies them again against the configured database. It is intended for local and CI databases only because it runs a down migration and drops the Slice 3 tables. Do not run it against shared, staging, or production-like databases.
+`db-check` applies migrations, rolls them back, and applies them again against the configured database. It is intended for local and CI databases only because it runs a down migration and drops the migrated tables. Do not run it against shared, staging, or production-like databases.
 
 The local Docker Compose setup uses PostgreSQL 18.4 and development-only credentials. Do not reuse the local credentials outside local development.
 
@@ -155,11 +157,12 @@ make vuln
 
 ## CI
 
-GitHub Actions runs fast baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
+GitHub Actions runs baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
 
-The CI workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies database migrations, runs the fast Go checks, and builds the local Docker image:
+The CI workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies database migrations, runs Go checks including race tests, and builds the local Docker image:
 
 * `make check`
+* `make test-race`
 * `make db-check`
 * `make docker-build`
 
@@ -196,11 +199,13 @@ docker run --rm -p 8080:8080 \
 
 The image uses versioned base images, avoids `latest` tags, and runs the API as a non-root user.
 
-When running the Docker image directly, provide a reachable `DATABASE_URL` if the API should pass readiness checks.
+When running the Docker image directly, provide a `DATABASE_URL` that the container can reach. The API pings PostgreSQL during startup and exits if the dependency is unavailable.
 
 ## Configuration
 
 The service is configured with environment variables.
+
+For local development, `.env.example` documents the default environment variables used by the service. The application reads environment variables from the process; it does not load `.env` files automatically.
 
 | Variable                   | Default                                                                                         |
 | -------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -329,12 +334,11 @@ compose.yaml
   Local PostgreSQL development environment.
 ```
 
-## Pre-commit checklist
+## Before opening a pull request
 
-Before committing a slice, run:
+Run the main local checks before opening a PR:
 
 ```bash
-git diff --check
 make db-check
 make ci
 make docker-build
