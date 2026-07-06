@@ -48,12 +48,16 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Show Go version
         run: go version
 
       - name: Run checks
         run: make check
+
+      - name: Run race tests
+        run: make test-race
 
       - name: Verify database migrations
         run: make db-check
