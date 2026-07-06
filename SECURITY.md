@@ -7,20 +7,35 @@ This project is an early-stage portfolio service.
 * Local `.env` files are ignored by Git
 * HTTP server timeouts are configured explicitly
 * Request IDs are bounded in length and restricted to a safe character set
-* Logs avoid request bodies, secrets, and sensitive headers
+* Logs avoid request bodies, secrets, full idempotency keys, authorization headers, and sensitive runtime configuration
+* PostgreSQL is configured through `DATABASE_URL`
+* The local Docker Compose PostgreSQL credentials are development-only
+* `/readyz` checks PostgreSQL readiness without exposing raw database errors
+* Idempotency storage is designed to use hashed idempotency keys rather than raw keys
+* SQL migrations define schema-level constraints for critical invariants
 * The Docker container runs as a non-root user
 * Docker images use versioned base images and avoid `latest` tags
 * GitHub Actions CI uses least-privilege read-only repository permissions
-* CI runs formatting, vet, test, race, and Go vulnerability checks
+* CI runs formatting, module tidiness, vet, test, race, Go vulnerability checks, Docker build, and database migration verification
 * Dependabot is configured for Go modules, GitHub Actions, and Docker
 
 ## Current scope
 
-Slice 2 contains the HTTP API scaffold, health endpoints, baseline CI, and repository hygiene.
+Slice 3 contains the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, PostgreSQL local development, SQL migrations, core database schema, and PostgreSQL-backed readiness checks.
 
-There is no authentication, database, reward-claim API, idempotency store, or external integration yet.
+The core schema includes tables for reward claims, idempotency keys, and outbox events. The reward-claim API, idempotency behavior, transactional claim creation, transactional outbox writes, async worker, metrics, authentication, and external integrations are not implemented yet.
 
 More complete security documentation will be added as the service grows, including a threat model for reward claims, idempotency, persistence, and async event delivery.
+
+## Database and secrets
+
+The default `DATABASE_URL` is intended for local development only.
+
+Real credentials must not be committed to the repository, included in examples, or logged. Production-like environments should provide database credentials through their runtime secret-management mechanism.
+
+Application logs should not include full connection strings, authorization headers, request bodies, raw idempotency keys, or other sensitive metadata.
+
+The local PostgreSQL service is exposed on `localhost:5432` for developer convenience. Anyone adapting this project for production should review network exposure, TLS requirements, database roles, backup strategy, and credential rotation.
 
 ## Repository protection
 

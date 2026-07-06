@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,7 +33,7 @@ func TestLivezReturnsOK(t *testing.T) {
 	}
 }
 
-func TestReadyzReturnsReady(t *testing.T) {
+func TestReadyzReturnsReadyWithoutChecks(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
 
@@ -58,6 +60,68 @@ func TestReadyzReturnsReady(t *testing.T) {
 
 	if len(body.Checks) != 0 {
 		t.Fatalf("expected no readiness checks at this stage, got %d", len(body.Checks))
+	}
+}
+
+func TestReadyzReturnsReadyWhenChecksPass(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
+
+	newRouter(testLogger(), ReadinessCheck{
+		Name: "postgres",
+		Check: func(context.Context) error {
+			return nil
+		},
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	assertJSONContentType(t, rec)
+
+	var body readinessResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if body.Status != "ready" {
+		t.Fatalf("expected status ready, got %q", body.Status)
+	}
+
+	if body.Checks["postgres"] != "ok" {
+		t.Fatalf("expected postgres check ok, got %q", body.Checks["postgres"])
+	}
+}
+
+func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
+
+	newRouter(testLogger(), ReadinessCheck{
+		Name: "postgres",
+		Check: func(context.Context) error {
+			return errors.New("postgres down")
+		},
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+
+	assertJSONContentType(t, rec)
+
+	var body readinessResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if body.Status != "not_ready" {
+		t.Fatalf("expected status not_ready, got %q", body.Status)
+	}
+
+	if body.Checks["postgres"] != "error" {
+		t.Fatalf("expected postgres check error, got %q", body.Checks["postgres"])
 	}
 }
 

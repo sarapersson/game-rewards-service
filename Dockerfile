@@ -4,7 +4,7 @@ FROM golang:1.26.4-trixie AS build
 
 WORKDIR /src
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .

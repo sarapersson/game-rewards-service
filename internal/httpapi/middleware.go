@@ -3,6 +3,7 @@ package httpapi
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -59,7 +60,7 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 					logger.ErrorContext(
 						r.Context(),
 						"panic recovered",
-						slog.Any("panic", recovered),
+						slog.String("panic_type", fmt.Sprintf("%T", recovered)),
 						slog.String("request_id", requestIDFromRequest(r)),
 						slog.String("stack", string(debug.Stack())),
 					)

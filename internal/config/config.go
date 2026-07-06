@@ -19,6 +19,8 @@ const (
 	defaultHTTPIdleTimeout       = 60 * time.Second
 	defaultShutdownTimeout       = 10 * time.Second
 	defaultLogLevel              = slog.LevelInfo
+	defaultDatabaseURL           = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
+	defaultDBPingTimeout         = 2 * time.Second
 )
 
 // Config contains all runtime configuration needed by the service.
@@ -26,6 +28,7 @@ type Config struct {
 	AppEnv          string
 	ServiceName     string
 	HTTP            HTTPConfig
+	Database        DatabaseConfig
 	Log             LogConfig
 	ShutdownTimeout time.Duration
 }
@@ -37,6 +40,12 @@ type HTTPConfig struct {
 	ReadHeaderTimeout time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
+}
+
+// DatabaseConfig contains PostgreSQL connection settings.
+type DatabaseConfig struct {
+	URL         string
+	PingTimeout time.Duration
 }
 
 // LogConfig contains structured logging settings.
@@ -57,6 +66,9 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 		ServiceName: getString(lookup, "SERVICE_NAME", defaultServiceName),
 		HTTP: HTTPConfig{
 			Addr: getString(lookup, "HTTP_ADDR", defaultHTTPAddr),
+		},
+		Database: DatabaseConfig{
+			URL: getString(lookup, "DATABASE_URL", defaultDatabaseURL),
 		},
 		ShutdownTimeout: defaultShutdownTimeout,
 		Log: LogConfig{
@@ -82,6 +94,11 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 	}
 
 	cfg.HTTP.IdleTimeout, err = getDuration(lookup, "HTTP_IDLE_TIMEOUT", defaultHTTPIdleTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Database.PingTimeout, err = getDuration(lookup, "DB_PING_TIMEOUT", defaultDBPingTimeout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -161,6 +178,10 @@ func validate(cfg Config) error {
 
 	if strings.TrimSpace(cfg.HTTP.Addr) == "" {
 		return fmt.Errorf("HTTP_ADDR must not be empty")
+	}
+
+	if strings.TrimSpace(cfg.Database.URL) == "" {
+		return fmt.Errorf("DATABASE_URL must not be empty")
 	}
 
 	return nil
