@@ -11,6 +11,7 @@ import (
 
 	"github.com/sarapersson/game-rewards-service/internal/config"
 	"github.com/sarapersson/game-rewards-service/internal/httpapi"
+	"github.com/sarapersson/game-rewards-service/internal/postgres"
 )
 
 func main() {
@@ -26,7 +27,24 @@ func run() int {
 
 	logger := newLogger(cfg)
 
-	server := httpapi.NewServer(cfg, logger)
+	dbPool, err := postgres.OpenPool(context.Background(), cfg.Database)
+	if err != nil {
+		logger.Error("open postgres pool", slog.Any("error", err))
+		return 1
+	}
+	defer dbPool.Close()
+
+	if err := postgres.Ping(context.Background(), dbPool, cfg.Database.PingTimeout); err != nil {
+		logger.Error("ping postgres", slog.Any("error", err))
+		return 1
+	}
+
+	server := httpapi.NewServer(cfg, logger, httpapi.ReadinessCheck{
+		Name: "postgres",
+		Check: func(ctx context.Context) error {
+			return postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout)
+		},
+	})
 
 	errCh := make(chan error, 1)
 

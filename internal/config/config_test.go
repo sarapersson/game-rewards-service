@@ -41,6 +41,14 @@ func TestLoadWithLookupUsesDefaults(t *testing.T) {
 		t.Fatalf("expected idle timeout 60s, got %s", cfg.HTTP.IdleTimeout)
 	}
 
+	if cfg.Database.URL != "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable" {
+		t.Fatalf("expected default database URL, got %q", cfg.Database.URL)
+	}
+
+	if cfg.Database.PingTimeout != 2*time.Second {
+		t.Fatalf("expected database ping timeout 2s, got %s", cfg.Database.PingTimeout)
+	}
+
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("expected shutdown timeout 10s, got %s", cfg.ShutdownTimeout)
 	}
@@ -59,6 +67,8 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		"HTTP_READ_HEADER_TIMEOUT": "500ms",
 		"HTTP_WRITE_TIMEOUT":       "2s",
 		"HTTP_IDLE_TIMEOUT":        "30s",
+		"DATABASE_URL":             "postgres://custom:secret@localhost:5433/custom?sslmode=disable",
+		"DB_PING_TIMEOUT":          "750ms",
 		"SHUTDOWN_TIMEOUT":         "3s",
 		"LOG_LEVEL":                "debug",
 	}))
@@ -94,6 +104,14 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("expected idle timeout 30s, got %s", cfg.HTTP.IdleTimeout)
 	}
 
+	if cfg.Database.URL != "postgres://custom:secret@localhost:5433/custom?sslmode=disable" {
+		t.Fatalf("expected custom database URL, got %q", cfg.Database.URL)
+	}
+
+	if cfg.Database.PingTimeout != 750*time.Millisecond {
+		t.Fatalf("expected database ping timeout 750ms, got %s", cfg.Database.PingTimeout)
+	}
+
 	if cfg.ShutdownTimeout != 3*time.Second {
 		t.Fatalf("expected shutdown timeout 3s, got %s", cfg.ShutdownTimeout)
 	}
@@ -108,6 +126,7 @@ func TestLoadWithLookupFallsBackForBlankValues(t *testing.T) {
 		"APP_ENV":      "   ",
 		"SERVICE_NAME": "",
 		"HTTP_ADDR":    "\t",
+		"DATABASE_URL": "",
 		"LOG_LEVEL":    "",
 	}))
 	if err != nil {
@@ -124,6 +143,10 @@ func TestLoadWithLookupFallsBackForBlankValues(t *testing.T) {
 
 	if cfg.HTTP.Addr != ":8080" {
 		t.Fatalf("expected blank HTTP_ADDR to fall back to default, got %q", cfg.HTTP.Addr)
+	}
+
+	if cfg.Database.URL != "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable" {
+		t.Fatalf("expected blank DATABASE_URL to fall back to default, got %q", cfg.Database.URL)
 	}
 
 	if cfg.Log.Level != slog.LevelInfo {
@@ -154,6 +177,19 @@ func TestLoadWithLookupRejectsNonPositiveDuration(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "HTTP_WRITE_TIMEOUT") {
 		t.Fatalf("expected HTTP_WRITE_TIMEOUT error, got %v", err)
+	}
+}
+
+func TestLoadWithLookupRejectsInvalidDBPingTimeout(t *testing.T) {
+	_, err := loadWithLookup(mapLookup(map[string]string{
+		"DB_PING_TIMEOUT": "not-a-duration",
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid DB_PING_TIMEOUT") {
+		t.Fatalf("expected DB_PING_TIMEOUT error, got %v", err)
 	}
 }
 

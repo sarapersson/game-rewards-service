@@ -8,10 +8,10 @@ import (
 )
 
 // NewServer builds the HTTP server with routes, middleware, and production-safe timeouts.
-func NewServer(cfg config.Config, logger *slog.Logger) *http.Server {
+func NewServer(cfg config.Config, logger *slog.Logger, readinessChecks ...ReadinessCheck) *http.Server {
 	return &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           newRouter(logger),
+		Handler:           newRouter(logger, readinessChecks...),
 		ReadTimeout:       cfg.HTTP.ReadTimeout,
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
 		WriteTimeout:      cfg.HTTP.WriteTimeout,

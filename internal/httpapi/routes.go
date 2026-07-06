@@ -10,11 +10,11 @@ const (
 	routeReadyz = "/readyz"
 )
 
-func newRouter(logger *slog.Logger) http.Handler {
+func newRouter(logger *slog.Logger, readinessChecks ...ReadinessCheck) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc(routeLivez, livezHandler)
-	mux.HandleFunc(routeReadyz, readyzHandler)
+	mux.HandleFunc(routeReadyz, readyzHandler(readinessChecks...))
 
 	return withMiddleware(notFoundHandler(mux), logger)
 }

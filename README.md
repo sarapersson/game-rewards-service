@@ -6,12 +6,17 @@ The project is built in slices and is intended to demonstrate production-minded 
 
 ## Status
 
-Slice 2: CI / repo hygiene.
+Slice 3: PostgreSQL + migrations.
 
 Implemented:
 
 * HTTP server using Go standard library
 * `/livez` and `/readyz`
+* PostgreSQL-backed readiness check
+* PostgreSQL 18.4 local development with Docker Compose
+* SQL migrations
+* Core schema for reward claims, idempotency keys, and outbox events
+* Schema-level constraints for duplicate reward prevention and critical invariants
 * Structured logging with `log/slog`
 * Request ID middleware
 * Panic recovery
@@ -22,28 +27,34 @@ Implemented:
 * Makefile
 * Dockerfile
 * GitHub Actions CI
-* Formatting, module tidiness, vet, test, race, and Go vulnerability checks
+* Formatting, module tidiness, vet, test, race, Go vulnerability checks, and migration verification
 * Dependabot baseline for Go modules, GitHub Actions, and Docker
 
 Planned later:
 
 * `POST /v1/reward-claims`
-* PostgreSQL persistence
-* SQL migrations
-* Idempotency with `Idempotency-Key`
-* Duplicate reward prevention
-* Transactional outbox
+* Idempotency behavior with `Idempotency-Key`
+* Transactional reward claim creation
+* Transactional outbox writes
 * Async worker
 * `/metrics`
-* Docker Compose
 * Deeper security scanning and supply-chain hardening
 
 ## Requirements
 
 * Go 1.26.4
-* Docker, for building and running the local container image
+* Docker, for local PostgreSQL and building the local container image
 
 ## Run locally
+
+Start PostgreSQL and apply migrations:
+
+```bash
+make db-up
+make migrate-up
+```
+
+Run the API:
 
 ```bash
 make run
@@ -55,6 +66,59 @@ Health checks:
 curl -i http://localhost:8080/livez
 curl -i http://localhost:8080/readyz
 ```
+
+When PostgreSQL is reachable, `/readyz` includes the dependency check:
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "postgres": "ok"
+  }
+}
+```
+
+## Database
+
+Start local PostgreSQL:
+
+```bash
+make db-up
+```
+
+Stop local PostgreSQL:
+
+```bash
+make db-down
+```
+
+View PostgreSQL logs:
+
+```bash
+make db-logs
+```
+
+Apply migrations:
+
+```bash
+make migrate-up
+```
+
+Show migration version:
+
+```bash
+make migrate-status
+```
+
+Verify migrations can apply, roll back, and re-apply:
+
+```bash
+make db-check
+```
+
+`db-check` applies migrations, rolls them back, and applies them again against the configured database. It is intended for local and CI databases only because it runs a down migration and drops the Slice 3 tables. Do not run it against shared, staging, or production-like databases.
+
+The local Docker Compose setup uses PostgreSQL 18.4 and development-only credentials. Do not reuse the local credentials outside local development.
 
 ## Run tests
 
@@ -68,6 +132,12 @@ Run the full Go CI check set locally:
 
 ```bash
 make ci
+```
+
+Verify database migrations locally:
+
+```bash
+make db-check
 ```
 
 Run individual checks:
@@ -85,8 +155,9 @@ make vuln
 
 GitHub Actions runs the baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
 
-The workflow uses least-privilege read-only repository permissions. It runs the same Go checks as `make ci` and also builds the local Docker image:
+The workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies database migrations, runs the same Go checks as `make ci`, and also builds the local Docker image:
 
+* `make db-check`
 * `make mod-tidy-check`
 * `make fmt-check`
 * `make vet`
@@ -105,30 +176,41 @@ make build
 
 ## Docker
 
-Build and run the local Docker image:
+Build the local Docker image:
 
 ```bash
 make docker-build
-docker run --rm -p 8080:8080 game-rewards-service:local
+```
+
+Run the image with a reachable PostgreSQL database:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL='postgres://game_rewards:game_rewards_dev_password@host.docker.internal:5432/game_rewards?sslmode=disable' \
+  game-rewards-service:local
 ```
 
 The image uses versioned base images, avoids `latest` tags, and runs the API as a non-root user.
+
+When running the Docker image directly, provide a reachable `DATABASE_URL` if the API should pass readiness checks.
 
 ## Configuration
 
 The service is configured with environment variables.
 
-| Variable                   | Default                |
-| -------------------------- | ---------------------- |
-| `APP_ENV`                  | `local`                |
-| `SERVICE_NAME`             | `game-rewards-service` |
-| `HTTP_ADDR`                | `:8080`                |
-| `HTTP_READ_TIMEOUT`        | `5s`                   |
-| `HTTP_READ_HEADER_TIMEOUT` | `2s`                   |
-| `HTTP_WRITE_TIMEOUT`       | `10s`                  |
-| `HTTP_IDLE_TIMEOUT`        | `60s`                  |
-| `SHUTDOWN_TIMEOUT`         | `10s`                  |
-| `LOG_LEVEL`                | `info`                 |
+| Variable                   | Default                                                                                         |
+| -------------------------- | ----------------------------------------------------------------------------------------------- |
+| `APP_ENV`                  | `local`                                                                                         |
+| `SERVICE_NAME`             | `game-rewards-service`                                                                          |
+| `HTTP_ADDR`                | `:8080`                                                                                         |
+| `HTTP_READ_TIMEOUT`        | `5s`                                                                                            |
+| `HTTP_READ_HEADER_TIMEOUT` | `2s`                                                                                            |
+| `HTTP_WRITE_TIMEOUT`       | `10s`                                                                                           |
+| `HTTP_IDLE_TIMEOUT`        | `60s`                                                                                           |
+| `DATABASE_URL`             | `postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable` |
+| `DB_PING_TIMEOUT`          | `2s`                                                                                            |
+| `SHUTDOWN_TIMEOUT`         | `10s`                                                                                           |
+| `LOG_LEVEL`                | `info`                                                                                          |
 
 Example:
 
@@ -154,16 +236,29 @@ Status: `200 OK`
 
 Returns readiness.
 
-Status: `200 OK`
+Status: `200 OK` when PostgreSQL is reachable.
 
 ```json
 {
   "status": "ready",
-  "checks": {}
+  "checks": {
+    "postgres": "ok"
+  }
 }
 ```
 
-At this stage, readiness has no external dependency checks yet. PostgreSQL readiness will be added when persistence is introduced.
+If PostgreSQL is unavailable, the endpoint returns `503 Service Unavailable` and reports the dependency as `"error"` without exposing raw database errors.
+
+Example unavailable response:
+
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "postgres": "error"
+  }
+}
+```
 
 ### Request IDs
 
@@ -219,6 +314,15 @@ internal/config
 
 internal/httpapi
   HTTP server, routes, middleware, health checks, and JSON responses.
+
+internal/postgres
+  PostgreSQL pool setup and health checks.
+
+migrations
+  Versioned SQL migrations for the core schema.
+
+compose.yaml
+  Local PostgreSQL development environment.
 ```
 
 ## Pre-commit checklist
@@ -227,6 +331,7 @@ Before committing a slice, run:
 
 ```bash
 git diff --check
+make db-check
 make ci
 make docker-build
 ```
