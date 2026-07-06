@@ -6,7 +6,7 @@ The project is built in slices and is intended to demonstrate production-minded 
 
 ## Status
 
-Slice 3: PostgreSQL + migrations.
+Slice 3.5: CodeQL + CI split.
 
 Implemented:
 
@@ -27,7 +27,9 @@ Implemented:
 * Makefile
 * Dockerfile
 * GitHub Actions CI
-* Formatting, module tidiness, vet, test, race, Go vulnerability checks, and migration verification
+* Fast CI checks for formatting, module tidiness, vet, tests, migrations, and Docker builds
+* Separate security workflow for CodeQL code scanning and Go vulnerability checks
+* GitHub Actions concurrency cancellation for superseded workflow runs
 * Dependabot baseline for Go modules, GitHub Actions, and Docker
 
 Planned later:
@@ -38,7 +40,7 @@ Planned later:
 * Transactional outbox writes
 * Async worker
 * `/metrics`
-* Deeper security scanning and supply-chain hardening
+* Additional supply-chain hardening
 
 ## Requirements
 
@@ -128,7 +130,7 @@ Run fast local checks:
 make check
 ```
 
-Run the full Go CI check set locally:
+Run the full local check set:
 
 ```bash
 make ci
@@ -153,18 +155,20 @@ make vuln
 
 ## CI
 
-GitHub Actions runs the baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
+GitHub Actions runs fast baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
 
-The workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies database migrations, runs the same Go checks as `make ci`, and also builds the local Docker image:
+The CI workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies database migrations, runs the fast Go checks, and builds the local Docker image:
 
+* `make check`
 * `make db-check`
-* `make mod-tidy-check`
-* `make fmt-check`
-* `make vet`
-* `make test`
-* `make test-race`
-* `make vuln`
 * `make docker-build`
+
+Security checks run in a separate workflow:
+
+* CodeQL code scanning
+* `make vuln`
+
+Both workflows cancel superseded runs for the same branch so pull requests show the latest result without waiting for older runs to finish.
 
 The repository should be configured so changes to `main` go through pull requests with required passing CI checks.
 
