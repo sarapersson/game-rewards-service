@@ -10,18 +10,19 @@ const (
 	routeReadyz = "/readyz"
 )
 
-func newRouter(logger *slog.Logger, readinessChecks ...ReadinessCheck) http.Handler {
+func newRouter(logger *slog.Logger, rewardClaims rewardClaimCreator, readinessChecks ...ReadinessCheck) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc(routeLivez, livezHandler)
 	mux.HandleFunc(routeReadyz, readyzHandler(readinessChecks...))
+	mux.HandleFunc(routeRewardClaims, rewardClaimsHandler(rewardClaims))
 
 	return withMiddleware(notFoundHandler(mux), logger)
 }
 
 func notFoundHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != routeLivez && r.URL.Path != routeReadyz {
+		if r.URL.Path != routeLivez && r.URL.Path != routeReadyz && r.URL.Path != routeRewardClaims {
 			writeError(w, http.StatusNotFound, errorCodeNotFound, "Not found")
 			return
 		}

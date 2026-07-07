@@ -164,6 +164,8 @@ func routeName(r *http.Request) string {
 		return routeLivez
 	case routeReadyz:
 		return routeReadyz
+	case routeRewardClaims:
+		return routeRewardClaims
 	default:
 		return "unknown"
 	}

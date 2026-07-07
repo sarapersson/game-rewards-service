@@ -20,7 +20,7 @@ func TestNewServerUsesConfiguredSettings(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, testLogger())
+	server := NewServer(cfg, testLogger(), nil)
 
 	if server.Addr != ":9090" {
 		t.Fatalf("expected addr :9090, got %q", server.Addr)
@@ -54,7 +54,7 @@ func TestNewServerWiresRoutesAndMiddleware(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, testLogger())
+	server := NewServer(cfg, testLogger(), nil)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeLivez, nil)

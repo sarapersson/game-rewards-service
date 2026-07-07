@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race vuln check ci run build clean docker-build db-up db-down db-logs migrate-up migrate-down migrate-status db-check
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration vuln check ci run build clean docker-build db-up db-down db-logs migrate-up migrate-down migrate-status db-check
 
 APP_NAME := game-rewards-service
 BIN_DIR := bin
@@ -31,6 +31,9 @@ test: ## Run tests
 
 test-race: ## Run tests with the race detector
 	go test -race ./...
+
+test-integration: ## Run PostgreSQL integration tests
+	go test -tags=integration ./...
 
 vuln: ## Run govulncheck
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
