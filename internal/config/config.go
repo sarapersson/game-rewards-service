@@ -21,6 +21,7 @@ const (
 	defaultLogLevel              = slog.LevelInfo
 	defaultDatabaseURL           = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 	defaultDBPingTimeout         = 2 * time.Second
+	defaultDBQueryTimeout        = 2 * time.Second
 )
 
 // Config contains all runtime configuration needed by the service.
@@ -44,8 +45,9 @@ type HTTPConfig struct {
 
 // DatabaseConfig contains PostgreSQL connection settings.
 type DatabaseConfig struct {
-	URL         string
-	PingTimeout time.Duration
+	URL          string
+	PingTimeout  time.Duration
+	QueryTimeout time.Duration
 }
 
 // LogConfig contains structured logging settings.
@@ -99,6 +101,11 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 	}
 
 	cfg.Database.PingTimeout, err = getDuration(lookup, "DB_PING_TIMEOUT", defaultDBPingTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Database.QueryTimeout, err = getDuration(lookup, "DB_QUERY_TIMEOUT", defaultDBQueryTimeout)
 	if err != nil {
 		return Config{}, err
 	}

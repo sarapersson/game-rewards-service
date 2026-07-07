@@ -11,7 +11,10 @@ This project is an early-stage backend service.
 * PostgreSQL is configured through `DATABASE_URL`
 * The local Docker Compose PostgreSQL credentials are development-only
 * `/readyz` checks PostgreSQL readiness without exposing raw database errors
-* Idempotency storage is designed to use hashed idempotency keys rather than raw keys
+* `POST /v1/reward-claims` requires and validates `Idempotency-Key`
+* Reward claim request bodies are size-limited
+* Duplicate reward claims for the same player, campaign, and reward are prevented by a PostgreSQL unique constraint
+* The idempotency schema is prepared to store hashed idempotency keys rather than raw keys
 * SQL migrations define schema-level constraints for critical invariants
 * The Docker container runs as a non-root user
 * Docker images use versioned base images and avoid `latest` tags
@@ -24,9 +27,9 @@ This project is an early-stage backend service.
 
 ## Current scope
 
-The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, CodeQL, and Go vulnerability checks.
+The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, PostgreSQL-backed reward claim creation, CodeQL, and Go vulnerability checks.
 
-The core schema includes tables for reward claims, idempotency keys, and outbox events. The reward-claim API, idempotency behavior, transactional claim creation, transactional outbox writes, async worker, metrics, authentication, and external integrations are not implemented yet.
+The core schema includes tables for reward claims, idempotency keys, and outbox events. The reward-claim API currently requires and validates `Idempotency-Key`, but deterministic idempotency replay, request hash mismatch handling, transactional idempotency state, transactional outbox writes, async worker, metrics, authentication, and external integrations are not implemented yet.
 
 More complete security documentation will be added as the service grows, including a threat model for reward claims, idempotency, persistence, and async event delivery.
 

@@ -15,7 +15,7 @@ func TestLivezReturnsOK(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeLivez, nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
@@ -37,7 +37,7 @@ func TestReadyzReturnsReadyWithoutChecks(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
@@ -67,7 +67,7 @@ func TestReadyzReturnsReadyWhenChecksPass(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
 
-	newRouter(testLogger(), ReadinessCheck{
+	newRouter(testLogger(), nil, ReadinessCheck{
 		Name: "postgres",
 		Check: func(context.Context) error {
 			return nil
@@ -98,7 +98,7 @@ func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
 
-	newRouter(testLogger(), ReadinessCheck{
+	newRouter(testLogger(), nil, ReadinessCheck{
 		Name: "postgres",
 		Check: func(context.Context) error {
 			return errors.New("postgres down")
@@ -129,7 +129,7 @@ func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/does-not-exist", nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status 404, got %d", rec.Code)
@@ -143,7 +143,7 @@ func TestLivezRejectsNonGETMethods(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, routeLivez, nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status 405, got %d", rec.Code)
@@ -158,7 +158,7 @@ func TestReadyzRejectsNonGETMethods(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, routeReadyz, nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status 405, got %d", rec.Code)

@@ -11,7 +11,7 @@ func TestMiddlewareSetsGeneratedRequestID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeLivez, nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	got := rec.Header().Get(headerRequestID)
 	if got == "" {
@@ -28,7 +28,7 @@ func TestMiddlewareReusesValidRequestID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, routeLivez, nil)
 	req.Header.Set(headerRequestID, "test-request-id")
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	got := rec.Header().Get(headerRequestID)
 	if got != "test-request-id" {
@@ -43,7 +43,7 @@ func TestMiddlewareRejectsTooLongRequestID(t *testing.T) {
 	tooLong := strings.Repeat("a", maxRequestIDLen+1)
 	req.Header.Set(headerRequestID, tooLong)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	got := rec.Header().Get(headerRequestID)
 	if got == "" {
@@ -59,7 +59,7 @@ func TestMiddlewareSetsSecureHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeLivez, nil)
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("expected X-Content-Type-Options nosniff, got %q", got)
@@ -110,7 +110,7 @@ func TestMiddlewareRejectsInvalidRequestID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, routeLivez, nil)
 	req.Header.Set(headerRequestID, "bad request id")
 
-	newRouter(testLogger()).ServeHTTP(rec, req)
+	newRouter(testLogger(), nil).ServeHTTP(rec, req)
 
 	got := rec.Header().Get(headerRequestID)
 	if got == "" {

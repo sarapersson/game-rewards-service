@@ -12,6 +12,7 @@ import (
 	"github.com/sarapersson/game-rewards-service/internal/config"
 	"github.com/sarapersson/game-rewards-service/internal/httpapi"
 	"github.com/sarapersson/game-rewards-service/internal/postgres"
+	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
 
 func main() {
@@ -39,7 +40,10 @@ func run() int {
 		return 1
 	}
 
-	server := httpapi.NewServer(cfg, logger, httpapi.ReadinessCheck{
+	rewardStore := rewards.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
+	rewardService := rewards.NewService(rewardStore)
+
+	server := httpapi.NewServer(cfg, logger, rewardService, httpapi.ReadinessCheck{
 		Name: "postgres",
 		Check: func(ctx context.Context) error {
 			return postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout)

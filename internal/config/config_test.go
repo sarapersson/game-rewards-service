@@ -49,6 +49,10 @@ func TestLoadWithLookupUsesDefaults(t *testing.T) {
 		t.Fatalf("expected database ping timeout 2s, got %s", cfg.Database.PingTimeout)
 	}
 
+	if cfg.Database.QueryTimeout != 2*time.Second {
+		t.Fatalf("expected database query timeout 2s, got %s", cfg.Database.QueryTimeout)
+	}
+
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("expected shutdown timeout 10s, got %s", cfg.ShutdownTimeout)
 	}
@@ -69,6 +73,7 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		"HTTP_IDLE_TIMEOUT":        "30s",
 		"DATABASE_URL":             "postgres://custom:secret@localhost:5433/custom?sslmode=disable",
 		"DB_PING_TIMEOUT":          "750ms",
+		"DB_QUERY_TIMEOUT":         "900ms",
 		"SHUTDOWN_TIMEOUT":         "3s",
 		"LOG_LEVEL":                "debug",
 	}))
@@ -110,6 +115,10 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 
 	if cfg.Database.PingTimeout != 750*time.Millisecond {
 		t.Fatalf("expected database ping timeout 750ms, got %s", cfg.Database.PingTimeout)
+	}
+
+	if cfg.Database.QueryTimeout != 900*time.Millisecond {
+		t.Fatalf("expected database query timeout 900ms, got %s", cfg.Database.QueryTimeout)
 	}
 
 	if cfg.ShutdownTimeout != 3*time.Second {
@@ -190,6 +199,19 @@ func TestLoadWithLookupRejectsInvalidDBPingTimeout(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "invalid DB_PING_TIMEOUT") {
 		t.Fatalf("expected DB_PING_TIMEOUT error, got %v", err)
+	}
+}
+
+func TestLoadWithLookupRejectsInvalidDBQueryTimeout(t *testing.T) {
+	_, err := loadWithLookup(mapLookup(map[string]string{
+		"DB_QUERY_TIMEOUT": "not-a-duration",
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid DB_QUERY_TIMEOUT") {
+		t.Fatalf("expected DB_QUERY_TIMEOUT error, got %v", err)
 	}
 }
 
