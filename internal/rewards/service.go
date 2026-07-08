@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
 type Store interface {
-	InsertClaim(ctx context.Context, claim Claim) (Claim, error)
+	CreateClaim(ctx context.Context, cmd CreateClaimStoreCommand) (CreateClaimResult, error)
 }
 
 type Service struct {
@@ -30,17 +32,32 @@ func NewServiceWithIDGenerator(store Store, newID IDGenerator) *Service {
 	}
 }
 
-func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Claim, error) {
+func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (CreateClaimResult, error) {
 	cmd.PlayerID = strings.TrimSpace(cmd.PlayerID)
 	cmd.CampaignID = strings.TrimSpace(cmd.CampaignID)
 	cmd.RewardID = strings.TrimSpace(cmd.RewardID)
+	cmd.IdempotencyKey = strings.TrimSpace(cmd.IdempotencyKey)
 
 	if err := validateCreateClaimCommand(cmd); err != nil {
-		return Claim{}, err
+		return CreateClaimResult{}, err
 	}
 
 	if s == nil || s.store == nil {
-		return Claim{}, fmt.Errorf("insert reward claim: %w", ErrUnavailable)
+		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", ErrUnavailable)
+	}
+
+	keyHash, err := idempotency.HashKey(cmd.IdempotencyKey)
+	if err != nil {
+		return CreateClaimResult{}, ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"}
+	}
+
+	requestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
+		PlayerID:   cmd.PlayerID,
+		CampaignID: cmd.CampaignID,
+		RewardID:   cmd.RewardID,
+	})
+	if err != nil {
+		return CreateClaimResult{}, fmt.Errorf("hash reward claim request: %w", ErrInternal)
 	}
 
 	newID := s.newID
@@ -50,7 +67,7 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Clai
 
 	id, err := newID()
 	if err != nil {
-		return Claim{}, fmt.Errorf("create reward claim id: %w", err)
+		return CreateClaimResult{}, fmt.Errorf("create reward claim id: %w", err)
 	}
 
 	claim := Claim{
@@ -61,12 +78,17 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Clai
 		Status:     ClaimStatusClaimed,
 	}
 
-	created, err := s.store.InsertClaim(ctx, claim)
+	result, err := s.store.CreateClaim(ctx, CreateClaimStoreCommand{
+		Claim:       claim,
+		Operation:   idempotency.RewardClaimOperation,
+		KeyHash:     keyHash[:],
+		RequestHash: requestHash[:],
+	})
 	if err != nil {
-		return Claim{}, fmt.Errorf("insert reward claim: %w", err)
+		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
 	}
 
-	return created, nil
+	return result, nil
 }
 
 func validateCreateClaimCommand(cmd CreateClaimCommand) error {
@@ -92,6 +114,10 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 
 	if utf8.RuneCountInString(cmd.RewardID) > MaxIDLength {
 		return ValidationError{Field: "reward_id", Message: "reward_id must be at most 128 characters"}
+	}
+
+	if cmd.IdempotencyKey == "" {
+		return ValidationError{Field: "idempotency_key", Message: "idempotency key is required"}
 	}
 
 	return nil

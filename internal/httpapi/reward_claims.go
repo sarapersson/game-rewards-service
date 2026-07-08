@@ -9,7 +9,6 @@ import (
 	"mime"
 	"net/http"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
@@ -18,7 +17,8 @@ import (
 const (
 	routeRewardClaims = "/v1/reward-claims"
 
-	headerIdempotencyKey = "Idempotency-Key"
+	headerIdempotencyKey     = "Idempotency-Key"
+	headerIdempotentReplayed = "Idempotent-Replayed"
 
 	maxIdempotencyKeyLength = 255
 	maxRewardClaimBodyBytes = 64 * 1024
@@ -26,6 +26,8 @@ const (
 	errorCodeRewardAlreadyClaimed   = "reward_already_claimed"
 	errorCodeInvalidIdempotencyKey  = "invalid_idempotency_key"
 	errorCodeIdempotencyKeyRequired = "idempotency_key_required"
+	errorCodeIdempotencyKeyReused   = "idempotency_key_reused"
+	errorCodeIdempotencyInProgress  = "idempotency_key_in_progress"
 	errorCodeInvalidJSON            = "invalid_json"
 	errorCodeInvalidRequest         = "invalid_request"
 	errorCodeRequestBodyTooLarge    = "request_body_too_large"
@@ -34,22 +36,13 @@ const (
 )
 
 type rewardClaimCreator interface {
-	CreateClaim(ctx context.Context, cmd rewards.CreateClaimCommand) (rewards.Claim, error)
+	CreateClaim(ctx context.Context, cmd rewards.CreateClaimCommand) (rewards.CreateClaimResult, error)
 }
 
 type createRewardClaimRequest struct {
 	PlayerID   string `json:"player_id"`
 	CampaignID string `json:"campaign_id"`
 	RewardID   string `json:"reward_id"`
-}
-
-type createRewardClaimResponse struct {
-	ClaimID    string `json:"claim_id"`
-	PlayerID   string `json:"player_id"`
-	CampaignID string `json:"campaign_id"`
-	RewardID   string `json:"reward_id"`
-	Status     string `json:"status"`
-	ClaimedAt  string `json:"claimed_at"`
 }
 
 func rewardClaimsHandler(service rewardClaimCreator) http.HandlerFunc {
@@ -89,17 +82,22 @@ func rewardClaimsHandler(service rewardClaimCreator) http.HandlerFunc {
 			return
 		}
 
-		claim, err := service.CreateClaim(r.Context(), rewards.CreateClaimCommand{
-			PlayerID:   strings.TrimSpace(req.PlayerID),
-			CampaignID: strings.TrimSpace(req.CampaignID),
-			RewardID:   strings.TrimSpace(req.RewardID),
+		result, err := service.CreateClaim(r.Context(), rewards.CreateClaimCommand{
+			PlayerID:       strings.TrimSpace(req.PlayerID),
+			CampaignID:     strings.TrimSpace(req.CampaignID),
+			RewardID:       strings.TrimSpace(req.RewardID),
+			IdempotencyKey: strings.TrimSpace(r.Header.Get(headerIdempotencyKey)),
 		})
 		if err != nil {
 			writeCreateClaimError(w, err)
 			return
 		}
 
-		writeJSON(w, http.StatusCreated, newCreateRewardClaimResponse(claim))
+		if result.Replayed {
+			w.Header().Set(headerIdempotentReplayed, "true")
+		}
+
+		writeRawJSON(w, result.StatusCode, result.ResponseBody)
 	}
 }
 
@@ -211,21 +209,15 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 	return nil
 }
 
-func newCreateRewardClaimResponse(claim rewards.Claim) createRewardClaimResponse {
-	return createRewardClaimResponse{
-		ClaimID:    claim.ID,
-		PlayerID:   claim.PlayerID,
-		CampaignID: claim.CampaignID,
-		RewardID:   claim.RewardID,
-		Status:     claim.Status,
-		ClaimedAt:  claim.CreatedAt.UTC().Format(time.RFC3339Nano),
-	}
-}
-
 func writeCreateClaimError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, rewards.ErrDuplicateClaim):
 		writeError(w, http.StatusConflict, errorCodeRewardAlreadyClaimed, "Reward has already been claimed")
+	case errors.Is(err, rewards.ErrIdempotencyKeyReused):
+		writeError(w, http.StatusConflict, errorCodeIdempotencyKeyReused, "Idempotency-Key was reused with a different request payload")
+	case errors.Is(err, rewards.ErrIdempotencyInProgress):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusConflict, errorCodeIdempotencyInProgress, "A request with this Idempotency-Key is still processing")
 	case rewards.IsValidationError(err):
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, err.Error())
 	case errors.Is(err, rewards.ErrUnavailable):
