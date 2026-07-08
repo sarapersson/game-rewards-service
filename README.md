@@ -6,14 +6,18 @@ The codebase is developed in small, reviewable slices with a focus on correctnes
 
 ## Status
 
-Current implementation: HTTP API scaffold, PostgreSQL persistence, reward claim creation, CI, and baseline security checks.
+Current implementation: HTTP API scaffold, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, CI, and baseline security checks.
 
 Implemented so far:
 
 * HTTP server using the Go standard library
 * `/livez` and `/readyz`
 * `POST /v1/reward-claims`
+* Required `Idempotency-Key` support for `POST /v1/reward-claims`
+* Deterministic idempotency replay for completed reward claim requests
+* Request hash mismatch handling for reused idempotency keys
 * PostgreSQL-backed reward claim creation
+* PostgreSQL-backed idempotency state
 * PostgreSQL-backed readiness check
 * PostgreSQL 18.4 local development with Docker Compose
 * SQL migrations
@@ -27,6 +31,7 @@ Implemented so far:
 * Graceful shutdown
 * Unit tests
 * PostgreSQL integration tests
+* HTTP + PostgreSQL integration tests
 * Makefile
 * Dockerfile
 * GitHub Actions CI
@@ -37,16 +42,17 @@ Implemented so far:
 
 Planned work:
 
-* Deterministic idempotency replay with `Idempotency-Key`
-* Transactional idempotency state for reward claim creation
-* Transactional outbox writes
-* Async worker
+* Transactional outbox writes for reward claim events
+* Async outbox worker
 * `/metrics`
+* Prometheus-style low-cardinality metrics
 * Container scanning and SBOM generation
+* OpenAPI contract
+* Expanded architecture, reliability, observability, threat model, runbook, and tradeoff documentation
 
 ## Requirements
 
-* Go 1.26.4
+* Go 1.26.5
 * Docker, for local PostgreSQL and building the local container image
 * Make, for the documented local development commands
 
@@ -94,6 +100,8 @@ curl -i -X POST http://localhost:8080/v1/reward-claims \
   -d '{"player_id":"player-123","campaign_id":"winter-2026","reward_id":"daily-login"}'
 ```
 
+Retrying the same request with the same `Idempotency-Key` returns the stored response body and includes `Idempotent-Replayed: true`.
+
 ## Database
 
 Start local PostgreSQL:
@@ -134,7 +142,7 @@ make db-check
 
 `db-check` applies pending migrations, rolls back the latest migration, and applies migrations again against the configured database. It is intended for clean local and CI databases. If you have created manual local reward claim data, clear it or reset the local database before running `db-check`. Do not run it against shared, staging, or production-like databases.
 
-The local Docker Compose setup uses PostgreSQL 18.4 and development-only credentials. Do not reuse the local credentials outside local development.
+The local Docker Compose setup uses PostgreSQL 18.4 and development-only credentials. PostgreSQL is bound to localhost for local development. Do not reuse the local credentials outside local development.
 
 ## Run tests
 
@@ -156,13 +164,17 @@ Verify database migrations locally:
 make db-check
 ```
 
-Run PostgreSQL integration tests:
+Run PostgreSQL integration tests against an already running and migrated local database:
 
 ```bash
 make test-integration
 ```
 
-Integration tests require PostgreSQL to be running and migrations to be applied. Locally, run `make db-up` and `make migrate-up` first.
+Start PostgreSQL, apply migrations, and run integration tests:
+
+```bash
+make test-integration-local
+```
 
 Run individual checks:
 
@@ -300,7 +312,7 @@ Example unavailable response:
 
 Creates a reward claim for a player in a campaign.
 
-This endpoint requires an `Idempotency-Key` header. In the current slice, the header is required and validated, but completed response replay and request hash mismatch handling are planned for the next idempotency slice.
+This endpoint requires an `Idempotency-Key` header. The service uses the key to provide deterministic retry behavior for reward claim creation. Raw idempotency keys are not stored; the service stores a SHA-256 key hash, request hash, idempotency state, response status, and response body.
 
 Request:
 
@@ -332,9 +344,45 @@ Status: `201 Created`
   "campaign_id": "winter-2026",
   "reward_id": "daily-login",
   "status": "claimed",
-  "claimed_at": "2026-07-07T12:34:56Z"
+  "claimed_at": "2026-07-07T12:34:56.123456Z"
 }
 ```
+
+#### Idempotency behavior
+
+A successful reward claim creation stores the response status and response body for the provided `Idempotency-Key`.
+
+Retrying the same accepted request with the same `Idempotency-Key` returns the stored response with the same status and body. Replay responses include:
+
+```text
+Idempotent-Replayed: true
+```
+
+Reusing the same `Idempotency-Key` with a different request payload returns `409 Conflict`:
+
+```json
+{
+  "error": {
+    "code": "idempotency_key_reused",
+    "message": "Idempotency-Key was reused with a different request payload"
+  }
+}
+```
+
+Concurrent requests with the same `Idempotency-Key` are serialized by PostgreSQL. In the normal case, a retry that arrives while the first transaction is completing waits for that transaction and then replays the completed stored response.
+
+If the service observes an already committed processing idempotency record, it returns `409 Conflict` with `Retry-After: 1`:
+
+```json
+{
+  "error": {
+    "code": "idempotency_key_in_progress",
+    "message": "A request with this Idempotency-Key is still processing"
+  }
+}
+```
+
+Validation errors, malformed JSON, unsupported content types, oversized request bodies, missing idempotency keys, invalid idempotency keys, dependency failures, and unexpected internal errors are not stored as idempotent responses.
 
 Duplicate reward claims for the same `player_id`, `campaign_id`, and `reward_id` return `409 Conflict`:
 
@@ -347,18 +395,24 @@ Duplicate reward claims for the same `player_id`, `campaign_id`, and `reward_id`
 }
 ```
 
+Duplicate reward responses are also stored for the idempotency key that produced them, so retrying the duplicate request with the same key replays the same `409 Conflict` response.
+
 Common responses:
 
-| Scenario                             | Status                       |
-| ------------------------------------ | ---------------------------- |
-| Claim created                        | `201 Created`                |
-| Invalid JSON or validation error     | `400 Bad Request`            |
-| Missing or invalid `Idempotency-Key` | `400 Bad Request`            |
-| Unsupported content type             | `415 Unsupported Media Type` |
-| Request body too large               | `413 Payload Too Large`      |
-| Reward already claimed               | `409 Conflict`               |
-| Dependency unavailable               | `503 Service Unavailable`    |
-| Unexpected internal failure          | `500 Internal Server Error`  |
+| Scenario                                              | Status                       |
+| ----------------------------------------------------- | ---------------------------- |
+| Claim created                                         | `201 Created`                |
+| Idempotent replay of stored created response          | `201 Created`                |
+| Invalid JSON or validation error                      | `400 Bad Request`            |
+| Missing or invalid `Idempotency-Key`                  | `400 Bad Request`            |
+| Unsupported content type                              | `415 Unsupported Media Type` |
+| Request body too large                                | `413 Payload Too Large`      |
+| Reward already claimed                                | `409 Conflict`               |
+| Idempotent replay of stored duplicate reward response | `409 Conflict`               |
+| `Idempotency-Key` reused with different payload       | `409 Conflict`               |
+| Visible processing `Idempotency-Key` record           | `409 Conflict`               |
+| Dependency unavailable                                | `503 Service Unavailable`    |
+| Unexpected internal failure                           | `500 Internal Server Error`  |
 
 Current validation rules:
 
@@ -383,7 +437,7 @@ Unknown routes return `404 Not Found`.
 
 Unsupported methods return `405 Method Not Allowed` with an `Allow` header listing supported methods.
 
-Invalid JSON, invalid requests, unsupported media types, oversized request bodies, already-claimed rewards, unavailable dependencies, and internal failures return the stable JSON error response format.
+Invalid JSON, invalid requests, unsupported media types, oversized request bodies, already-claimed rewards, unavailable dependencies, idempotency conflicts, and internal failures return the stable JSON error response format.
 
 Internal panics return `500 Internal Server Error`.
 
@@ -406,6 +460,8 @@ Current error codes:
 * `invalid_request`
 * `idempotency_key_required`
 * `invalid_idempotency_key`
+* `idempotency_key_reused`
+* `idempotency_key_in_progress`
 * `unsupported_media_type`
 * `request_body_too_large`
 * `reward_already_claimed`
@@ -436,11 +492,14 @@ internal/config
 internal/httpapi
   HTTP server, routes, middleware, health checks, reward claim endpoint, and JSON responses.
 
+internal/idempotency
+  Deterministic hashing helpers for idempotency keys and accepted request payloads.
+
 internal/postgres
   PostgreSQL pool setup and health checks.
 
 internal/rewards
-  Reward claim domain logic, service layer, and PostgreSQL-backed persistence.
+  Reward claim domain logic, service layer, response marshaling, and PostgreSQL-backed persistence.
 
 migrations
   Versioned SQL migrations for the core schema.
@@ -455,7 +514,7 @@ Run the main local checks before opening a PR:
 
 ```bash
 make db-check
-make test-integration
+make test-integration-local
 make ci
 make docker-build
 ```

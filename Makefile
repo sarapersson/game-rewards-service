@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration vuln check ci run build clean docker-build db-up db-down db-logs migrate-up migrate-down migrate-status db-check
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local vuln check ci run build clean docker-build db-up db-down db-logs migrate-up migrate-down migrate-status db-check
 
 APP_NAME := game-rewards-service
 BIN_DIR := bin
@@ -32,8 +32,13 @@ test: ## Run tests
 test-race: ## Run tests with the race detector
 	go test -race ./...
 
-test-integration: ## Run PostgreSQL integration tests
+test-integration: ## Run PostgreSQL integration tests against a running migrated database
 	go test -tags=integration ./...
+
+test-integration-local: ## Start PostgreSQL, apply migrations, and run integration tests
+	$(MAKE) db-up
+	$(MAKE) migrate-up
+	$(MAKE) test-integration
 
 vuln: ## Run govulncheck
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
@@ -55,8 +60,8 @@ clean: ## Remove build artifacts
 docker-build: ## Build the Docker image
 	docker build -t $(DOCKER_IMAGE) .
 
-db-up: ## Start local PostgreSQL
-	docker compose up -d postgres
+db-up: ## Start local PostgreSQL and wait until it is healthy
+	docker compose up -d --wait postgres
 
 db-down: ## Stop local PostgreSQL
 	docker compose down

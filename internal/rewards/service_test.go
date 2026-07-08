@@ -4,95 +4,90 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 )
 
 type fakeStore struct {
-	inserted Claim
-	result   Claim
-	err      error
+	cmd CreateClaimStoreCommand
+	err error
 }
 
-func (s *fakeStore) InsertClaim(_ context.Context, claim Claim) (Claim, error) {
-	s.inserted = claim
+func (s *fakeStore) CreateClaim(_ context.Context, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {
+	s.cmd = cmd
 
 	if s.err != nil {
-		return Claim{}, s.err
+		return CreateClaimResult{}, s.err
 	}
 
-	if s.result.ID == "" {
-		return claim, nil
+	body, err := MarshalCreatedClaimResponse(cmd.Claim)
+	if err != nil {
+		return CreateClaimResult{}, err
 	}
 
-	return s.result, nil
+	return CreateClaimResult{
+		StatusCode:   CreateClaimStatusCreated,
+		ResponseBody: body,
+	}, nil
 }
 
 func TestServiceCreateClaim(t *testing.T) {
-	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
-
-	store := &fakeStore{
-		result: Claim{
-			ID:         "claim-123",
-			PlayerID:   "player-123",
-			CampaignID: "campaign-123",
-			RewardID:   "reward-123",
-			Status:     ClaimStatusClaimed,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		},
-	}
+	store := &fakeStore{}
 
 	service := NewServiceWithIDGenerator(store, func() (string, error) {
 		return "claim-123", nil
 	})
 
-	claim, err := service.CreateClaim(context.Background(), CreateClaimCommand{
-		PlayerID:   " player-123 ",
-		CampaignID: " campaign-123 ",
-		RewardID:   " reward-123 ",
+	result, err := service.CreateClaim(context.Background(), CreateClaimCommand{
+		PlayerID:       " player-123 ",
+		CampaignID:     " campaign-123 ",
+		RewardID:       " reward-123 ",
+		IdempotencyKey: " claim-key-123 ",
 	})
 	if err != nil {
 		t.Fatalf("CreateClaim returned error: %v", err)
 	}
 
-	if claim.ID != "claim-123" {
-		t.Fatalf("claim.ID = %q, want %q", claim.ID, "claim-123")
+	if result.StatusCode != CreateClaimStatusCreated {
+		t.Fatalf("CreateClaim status = %d, want %d", result.StatusCode, CreateClaimStatusCreated)
 	}
 
-	if claim.PlayerID != "player-123" {
-		t.Fatalf("claim.PlayerID = %q, want %q", claim.PlayerID, "player-123")
+	if result.Replayed {
+		t.Fatal("CreateClaim should not return replayed result")
 	}
 
-	if claim.CampaignID != "campaign-123" {
-		t.Fatalf("claim.CampaignID = %q, want %q", claim.CampaignID, "campaign-123")
+	if len(result.ResponseBody) == 0 {
+		t.Fatal("CreateClaim response body is empty")
 	}
 
-	if claim.RewardID != "reward-123" {
-		t.Fatalf("claim.RewardID = %q, want %q", claim.RewardID, "reward-123")
+	if store.cmd.Claim.ID != "claim-123" {
+		t.Fatalf("stored claim ID = %q, want %q", store.cmd.Claim.ID, "claim-123")
 	}
 
-	if claim.Status != ClaimStatusClaimed {
-		t.Fatalf("claim.Status = %q, want %q", claim.Status, ClaimStatusClaimed)
+	if store.cmd.Claim.PlayerID != "player-123" {
+		t.Fatalf("stored player ID = %q, want %q", store.cmd.Claim.PlayerID, "player-123")
 	}
 
-	if store.inserted.ID != "claim-123" {
-		t.Fatalf("inserted.ID = %q, want %q", store.inserted.ID, "claim-123")
+	if store.cmd.Claim.CampaignID != "campaign-123" {
+		t.Fatalf("stored campaign ID = %q, want %q", store.cmd.Claim.CampaignID, "campaign-123")
 	}
 
-	if store.inserted.PlayerID != "player-123" {
-		t.Fatalf("inserted.PlayerID = %q, want %q", store.inserted.PlayerID, "player-123")
+	if store.cmd.Claim.RewardID != "reward-123" {
+		t.Fatalf("stored reward ID = %q, want %q", store.cmd.Claim.RewardID, "reward-123")
 	}
 
-	if store.inserted.CampaignID != "campaign-123" {
-		t.Fatalf("inserted.CampaignID = %q, want %q", store.inserted.CampaignID, "campaign-123")
+	if store.cmd.Claim.Status != ClaimStatusClaimed {
+		t.Fatalf("stored claim status = %q, want %q", store.cmd.Claim.Status, ClaimStatusClaimed)
 	}
 
-	if store.inserted.RewardID != "reward-123" {
-		t.Fatalf("inserted.RewardID = %q, want %q", store.inserted.RewardID, "reward-123")
+	if store.cmd.Operation == "" {
+		t.Fatal("store command operation is empty")
 	}
 
-	if store.inserted.Status != ClaimStatusClaimed {
-		t.Fatalf("inserted.Status = %q, want %q", store.inserted.Status, ClaimStatusClaimed)
+	if len(store.cmd.KeyHash) != 32 {
+		t.Fatalf("store command key hash length = %d, want 32", len(store.cmd.KeyHash))
+	}
+
+	if len(store.cmd.RequestHash) != 32 {
+		t.Fatalf("store command request hash length = %d, want 32", len(store.cmd.RequestHash))
 	}
 }
 
@@ -153,6 +148,15 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 			},
 			wantField: "reward_id",
 		},
+		{
+			name: "missing idempotency key",
+			cmd: CreateClaimCommand{
+				PlayerID:   "player-123",
+				CampaignID: "campaign-123",
+				RewardID:   "reward-123",
+			},
+			wantField: "idempotency_key",
+		},
 	}
 
 	for _, tt := range tests {
@@ -180,8 +184,8 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				t.Fatalf("ValidationError.Field = %q, want %q", validationErr.Field, tt.wantField)
 			}
 
-			if store.inserted.ID != "" {
-				t.Fatalf("store was called for invalid command: %+v", store.inserted)
+			if store.cmd.Claim.ID != "" {
+				t.Fatalf("store was called for invalid command: %+v", store.cmd)
 			}
 		})
 	}
@@ -197,9 +201,10 @@ func TestServiceCreateClaimPropagatesDuplicateClaim(t *testing.T) {
 	})
 
 	_, err := service.CreateClaim(context.Background(), CreateClaimCommand{
-		PlayerID:   "player-123",
-		CampaignID: "campaign-123",
-		RewardID:   "reward-123",
+		PlayerID:       "player-123",
+		CampaignID:     "campaign-123",
+		RewardID:       "reward-123",
+		IdempotencyKey: "claim-key-123",
 	})
 	if err == nil {
 		t.Fatal("CreateClaim returned nil error, want duplicate claim error")
@@ -216,9 +221,10 @@ func TestServiceCreateClaimReturnsUnavailableWithoutStore(t *testing.T) {
 	})
 
 	_, err := service.CreateClaim(context.Background(), CreateClaimCommand{
-		PlayerID:   "player-123",
-		CampaignID: "campaign-123",
-		RewardID:   "reward-123",
+		PlayerID:       "player-123",
+		CampaignID:     "campaign-123",
+		RewardID:       "reward-123",
+		IdempotencyKey: "claim-key-123",
 	})
 	if err == nil {
 		t.Fatal("CreateClaim returned nil error, want unavailable error")
@@ -237,9 +243,10 @@ func TestServiceCreateClaimReturnsIDGenerationError(t *testing.T) {
 	})
 
 	_, err := service.CreateClaim(context.Background(), CreateClaimCommand{
-		PlayerID:   "player-123",
-		CampaignID: "campaign-123",
-		RewardID:   "reward-123",
+		PlayerID:       "player-123",
+		CampaignID:     "campaign-123",
+		RewardID:       "reward-123",
+		IdempotencyKey: "claim-key-123",
 	})
 	if err == nil {
 		t.Fatal("CreateClaim returned nil error, want ID generation error")

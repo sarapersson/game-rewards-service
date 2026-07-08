@@ -14,34 +14,43 @@ import (
 )
 
 type fakeRewardClaimService struct {
-	claim rewards.Claim
-	err   error
+	result rewards.CreateClaimResult
+	err    error
 }
 
 type recordingRewardClaimService struct {
 	called bool
 	cmd    rewards.CreateClaimCommand
-	claim  rewards.Claim
+	result rewards.CreateClaimResult
 	err    error
 }
 
-func (s *recordingRewardClaimService) CreateClaim(_ context.Context, cmd rewards.CreateClaimCommand) (rewards.Claim, error) {
+func (s *recordingRewardClaimService) CreateClaim(_ context.Context, cmd rewards.CreateClaimCommand) (rewards.CreateClaimResult, error) {
 	s.called = true
 	s.cmd = cmd
 
 	if s.err != nil {
-		return rewards.Claim{}, s.err
+		return rewards.CreateClaimResult{}, s.err
 	}
 
-	return s.claim, nil
+	return s.result, nil
 }
 
-func (s fakeRewardClaimService) CreateClaim(_ context.Context, _ rewards.CreateClaimCommand) (rewards.Claim, error) {
+func (s fakeRewardClaimService) CreateClaim(_ context.Context, _ rewards.CreateClaimCommand) (rewards.CreateClaimResult, error) {
 	if s.err != nil {
-		return rewards.Claim{}, s.err
+		return rewards.CreateClaimResult{}, s.err
 	}
 
-	return s.claim, nil
+	return s.result, nil
+}
+
+type testCreateRewardClaimResponse struct {
+	ClaimID    string `json:"claim_id"`
+	PlayerID   string `json:"player_id"`
+	CampaignID string `json:"campaign_id"`
+	RewardID   string `json:"reward_id"`
+	Status     string `json:"status"`
+	ClaimedAt  string `json:"claimed_at"`
 }
 
 func TestRewardClaimsHandlerRejectsUnsupportedMethod(t *testing.T) {
@@ -273,17 +282,18 @@ func TestRewardClaimsHandlerRejectsLargeBody(t *testing.T) {
 
 func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 	createdAt := time.Date(2026, 7, 6, 12, 34, 56, 123456000, time.UTC)
-	updatedAt := createdAt.Add(time.Second)
 
 	service := &recordingRewardClaimService{
-		claim: rewards.Claim{
-			ID:         "claim-123",
-			PlayerID:   "player-123",
-			CampaignID: "campaign-123",
-			RewardID:   "reward-123",
-			Status:     rewards.ClaimStatusClaimed,
-			CreatedAt:  createdAt,
-			UpdatedAt:  updatedAt,
+		result: rewards.CreateClaimResult{
+			StatusCode: http.StatusCreated,
+			ResponseBody: []byte(`{
+				"claim_id":"claim-123",
+				"player_id":"player-123",
+				"campaign_id":"campaign-123",
+				"reward_id":"reward-123",
+				"status":"claimed",
+				"claimed_at":"` + createdAt.Format(time.RFC3339Nano) + `"
+			}`),
 		},
 	}
 
@@ -318,7 +328,11 @@ func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 		t.Fatalf("service reward_id = %q, want %q", service.cmd.RewardID, "reward-123")
 	}
 
-	var body createRewardClaimResponse
+	if service.cmd.IdempotencyKey != "claim-key-123" {
+		t.Fatalf("service idempotency key = %q, want %q", service.cmd.IdempotencyKey, "claim-key-123")
+	}
+
+	var body testCreateRewardClaimResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -348,18 +362,67 @@ func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 	}
 }
 
+func TestRewardClaimsHandlerWritesReplayHeader(t *testing.T) {
+	responseBody := `{"error":{"code":"reward_already_claimed","message":"Reward has already been claimed"}}`
+
+	service := &recordingRewardClaimService{
+		result: rewards.CreateClaimResult{
+			StatusCode:   http.StatusConflict,
+			ResponseBody: []byte(responseBody),
+			Replayed:     true,
+		},
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+
+	if got := rec.Header().Get(headerIdempotentReplayed); got != "true" {
+		t.Fatalf("%s = %q, want true", headerIdempotentReplayed, got)
+	}
+
+	if rec.Body.String() != responseBody {
+		t.Fatalf("response body = %s, want %s", rec.Body.String(), responseBody)
+	}
+}
+
 func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 	tests := []struct {
-		name       string
-		err        error
-		wantStatus int
-		wantCode   string
+		name           string
+		err            error
+		wantStatus     int
+		wantCode       string
+		wantRetryAfter string
 	}{
 		{
 			name:       "duplicate claim",
 			err:        rewards.ErrDuplicateClaim,
 			wantStatus: http.StatusConflict,
 			wantCode:   errorCodeRewardAlreadyClaimed,
+		},
+		{
+			name:       "idempotency key reused",
+			err:        rewards.ErrIdempotencyKeyReused,
+			wantStatus: http.StatusConflict,
+			wantCode:   errorCodeIdempotencyKeyReused,
+		},
+		{
+			name:           "idempotency key in progress",
+			err:            rewards.ErrIdempotencyInProgress,
+			wantStatus:     http.StatusConflict,
+			wantCode:       errorCodeIdempotencyInProgress,
+			wantRetryAfter: "1",
 		},
 		{
 			name:       "service validation",
@@ -414,6 +477,10 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 
 			if !strings.Contains(rec.Body.String(), tt.wantCode) {
 				t.Fatalf("response body = %q, want error code %q", rec.Body.String(), tt.wantCode)
+			}
+
+			if got := rec.Header().Get("Retry-After"); got != tt.wantRetryAfter {
+				t.Fatalf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
 			}
 		})
 	}

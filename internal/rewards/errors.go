@@ -6,9 +6,11 @@ import (
 )
 
 var (
-	ErrDuplicateClaim = errors.New("reward already claimed")
-	ErrUnavailable    = errors.New("reward claims store unavailable")
-	ErrInternal       = errors.New("reward claims store internal error")
+	ErrDuplicateClaim        = errors.New("reward already claimed")
+	ErrUnavailable           = errors.New("reward claims store unavailable")
+	ErrInternal              = errors.New("reward claims store internal error")
+	ErrIdempotencyKeyReused  = errors.New("idempotency key reused with different request payload")
+	ErrIdempotencyInProgress = errors.New("idempotency key is still processing")
 )
 
 type ValidationError struct {
