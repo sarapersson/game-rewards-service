@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -198,6 +199,10 @@ func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCo
 		return CreateClaimResult{}, err
 	}
 
+	if err := insertRewardClaimedOutboxEvent(ctx, tx, claim); err != nil {
+		return CreateClaimResult{}, err
+	}
+
 	if err := completeIdempotencyKey(ctx, tx, cmd, CreateClaimStatusCreated, body, claim.ID); err != nil {
 		return CreateClaimResult{}, err
 	}
@@ -206,6 +211,38 @@ func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCo
 		StatusCode:   CreateClaimStatusCreated,
 		ResponseBody: body,
 	}, nil
+}
+
+func insertRewardClaimedOutboxEvent(ctx context.Context, tx pgx.Tx, claim Claim) error {
+	eventID, err := NewUUIDV4()
+	if err != nil {
+		return fmt.Errorf("create reward claimed outbox event id: %v: %w", err, ErrInternal)
+	}
+
+	payload, err := json.Marshal(NewRewardClaimedEvent(eventID, claim))
+	if err != nil {
+		return fmt.Errorf("marshal reward claimed outbox payload: %v: %w", err, ErrInternal)
+	}
+
+	const query = `
+INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6)`
+
+	_, err = tx.Exec(
+		ctx,
+		query,
+		eventID,
+		outboxAggregateTypeRewardClaim,
+		claim.ID,
+		outboxEventTypeRewardClaimed,
+		string(payload),
+		outboxStatusPending,
+	)
+	if err != nil {
+		return mapPostgresError(err)
+	}
+
+	return nil
 }
 
 func completeDuplicateClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {

@@ -29,9 +29,7 @@ func TestPostgresStoreInsertClaim(t *testing.T) {
 	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
 	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DELETE FROM reward_claims WHERE id = $1", claimID)
-	})
+	cleanupIntegrationRewardClaimData(t, pool, playerID, campaignID, rewardID)
 
 	claim, err := store.InsertClaim(context.Background(), Claim{
 		ID:         claimID,
@@ -83,15 +81,7 @@ func TestPostgresStoreInsertClaimMapsDuplicateReward(t *testing.T) {
 	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
 	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationRewardClaimData(t, pool, playerID, campaignID, rewardID)
 
 	_, err := store.InsertClaim(context.Background(), Claim{
 		ID:         firstID,
@@ -127,14 +117,8 @@ func TestPostgresStoreAllowsSameRewardInDifferentCampaigns(t *testing.T) {
 	secondCampaignID := "campaign-spring-" + strings.ReplaceAll(t.Name(), "/", "-")
 	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND reward_id = $2",
-			playerID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationRewardClaimData(t, pool, playerID, firstCampaignID, rewardID)
+	cleanupIntegrationRewardClaimData(t, pool, playerID, secondCampaignID, rewardID)
 
 	_, err := store.InsertClaim(context.Background(), Claim{
 		ID:         firstID,
@@ -176,21 +160,7 @@ func TestPostgresStoreCreateClaimCompletesIdempotencyKey(t *testing.T) {
 	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
 	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			cmd.Operation,
-			cmd.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
 	result, err := store.CreateClaim(context.Background(), cmd)
 	if err != nil {
@@ -268,21 +238,7 @@ func TestPostgresStoreCreateClaimReplaysCompletedResponse(t *testing.T) {
 	replay := first
 	replay.Claim.ID = mustUUID(t)
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			first.Operation,
-			first.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
 
 	firstResult, err := store.CreateClaim(context.Background(), first)
 	if err != nil {
@@ -340,20 +296,8 @@ func TestPostgresStoreCreateClaimRejectsKeyReuseWithDifferentPayload(t *testing.
 	mismatch.Claim.RewardID = rewardID + "-different"
 	mismatch.RequestHash = []byte("different-request-hash-32-bytes!")
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			first.Operation,
-			first.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2",
-			playerID,
-			campaignID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first)
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, mismatch.Claim.RewardID, mismatch)
 
 	_, err := store.CreateClaim(context.Background(), first)
 	if err != nil {
@@ -394,27 +338,7 @@ func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
 	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+t.Name(), playerID, campaignID, rewardID)
 	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+t.Name(), playerID, campaignID, rewardID)
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			first.Operation,
-			first.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			duplicate.Operation,
-			duplicate.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
 
 	_, err := store.CreateClaim(context.Background(), first)
 	if err != nil {
@@ -503,27 +427,7 @@ func TestPostgresStoreCreateClaimReplaysDuplicateRewardResponse(t *testing.T) {
 	duplicateReplay := duplicate
 	duplicateReplay.Claim.ID = mustUUID(t)
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			first.Operation,
-			first.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			duplicate.Operation,
-			duplicate.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate, duplicateReplay)
 
 	_, err := store.CreateClaim(context.Background(), first)
 	if err != nil {
@@ -593,24 +497,7 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 		)
 	}
 
-	t.Cleanup(func() {
-		for _, cmd := range cmds {
-			_, _ = pool.Exec(
-				context.Background(),
-				"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-				cmd.Operation,
-				cmd.KeyHash,
-			)
-		}
-
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
 
 	start := make(chan struct{})
 	results := make(chan CreateClaimResult, attempts)
@@ -709,21 +596,7 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 		cmds[i].Claim.ID = mustUUID(t)
 	}
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			cmd.Operation,
-			cmd.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
 
 	start := make(chan struct{})
 	results := make(chan CreateClaimResult, attempts)
@@ -840,21 +713,7 @@ func TestPostgresStoreCreateClaimReturnsInProgressForProcessingKey(t *testing.T)
 	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
 	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			cmd.Operation,
-			cmd.KeyHash,
-		)
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
 	_, err := pool.Exec(
 		context.Background(),
@@ -895,6 +754,415 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
+func TestPostgresStoreCreateClaimCreatesRewardClaimedOutboxEvent(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
+	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
+	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+
+	result, err := store.CreateClaim(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("CreateClaim returned error: %v", err)
+	}
+
+	if result.StatusCode != CreateClaimStatusCreated {
+		t.Fatalf("status = %d, want %d", result.StatusCode, CreateClaimStatusCreated)
+	}
+
+	var (
+		eventID       string
+		aggregateType string
+		aggregateID   string
+		eventType     string
+		status        string
+		payload       []byte
+	)
+
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT id, aggregate_type, aggregate_id, event_type, status, payload
+FROM outbox_events
+WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
+		outboxAggregateTypeRewardClaim,
+		cmd.Claim.ID,
+		outboxEventTypeRewardClaimed,
+	).Scan(&eventID, &aggregateType, &aggregateID, &eventType, &status, &payload)
+	if err != nil {
+		t.Fatalf("query outbox event: %v", err)
+	}
+
+	if eventID == "" {
+		t.Fatal("event ID is empty")
+	}
+	if aggregateType != outboxAggregateTypeRewardClaim {
+		t.Fatalf("aggregate type = %q, want %q", aggregateType, outboxAggregateTypeRewardClaim)
+	}
+	if aggregateID != cmd.Claim.ID {
+		t.Fatalf("aggregate ID = %q, want %q", aggregateID, cmd.Claim.ID)
+	}
+	if eventType != outboxEventTypeRewardClaimed {
+		t.Fatalf("event type = %q, want %q", eventType, outboxEventTypeRewardClaimed)
+	}
+	if status != outboxStatusPending {
+		t.Fatalf("status = %q, want %q", status, outboxStatusPending)
+	}
+
+	var event RewardClaimedEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		t.Fatalf("unmarshal event payload: %v", err)
+	}
+
+	if event.SchemaVersion != rewardClaimedSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", event.SchemaVersion, rewardClaimedSchemaVersion)
+	}
+	if event.EventID != eventID {
+		t.Fatalf("payload event ID = %q, want %q", event.EventID, eventID)
+	}
+	if event.EventType != outboxEventTypeRewardClaimed {
+		t.Fatalf("payload event type = %q, want %q", event.EventType, outboxEventTypeRewardClaimed)
+	}
+	if event.Claim.ClaimID != cmd.Claim.ID {
+		t.Fatalf("payload claim ID = %q, want %q", event.Claim.ClaimID, cmd.Claim.ID)
+	}
+	if event.Claim.PlayerID != playerID {
+		t.Fatalf("payload player ID = %q, want %q", event.Claim.PlayerID, playerID)
+	}
+	if event.Claim.CampaignID != campaignID {
+		t.Fatalf("payload campaign ID = %q, want %q", event.Claim.CampaignID, campaignID)
+	}
+	if event.Claim.RewardID != rewardID {
+		t.Fatalf("payload reward ID = %q, want %q", event.Claim.RewardID, rewardID)
+	}
+	if event.Claim.Status != ClaimStatusClaimed {
+		t.Fatalf("payload claim status = %q, want %q", event.Claim.Status, ClaimStatusClaimed)
+	}
+	if event.Claim.ClaimedAt.IsZero() {
+		t.Fatal("payload claimed_at is zero")
+	}
+	if event.OccurredAt.IsZero() {
+		t.Fatal("payload occurred_at is zero")
+	}
+}
+
+func TestPostgresStoreCreateClaimRollsBackWhenOutboxInsertFails(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
+	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
+	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+
+	cleanupConflictingOutboxEvent := func() {
+		_, _ = pool.Exec(
+			context.Background(),
+			`
+DELETE FROM outbox_events
+WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
+			outboxAggregateTypeRewardClaim,
+			cmd.Claim.ID,
+			outboxEventTypeRewardClaimed,
+		)
+	}
+
+	cleanupConflictingOutboxEvent()
+	t.Cleanup(cleanupConflictingOutboxEvent)
+
+	_, err := pool.Exec(
+		context.Background(),
+		`
+INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+		mustUUID(t),
+		outboxAggregateTypeRewardClaim,
+		cmd.Claim.ID,
+		outboxEventTypeRewardClaimed,
+		`{"schema_version":1}`,
+		outboxStatusPending,
+	)
+	if err != nil {
+		t.Fatalf("seed conflicting outbox event: %v", err)
+	}
+
+	_, err = store.CreateClaim(context.Background(), cmd)
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
+	}
+
+	var claimCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM reward_claims
+WHERE id = $1`,
+		cmd.Claim.ID,
+	).Scan(&claimCount)
+	if err != nil {
+		t.Fatalf("count reward claims: %v", err)
+	}
+
+	if claimCount != 0 {
+		t.Fatalf("reward claim count = %d, want 0", claimCount)
+	}
+
+	var idempotencyCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM idempotency_keys
+WHERE operation = $1 AND key_hash = $2`,
+		cmd.Operation,
+		cmd.KeyHash,
+	).Scan(&idempotencyCount)
+	if err != nil {
+		t.Fatalf("count idempotency keys: %v", err)
+	}
+
+	if idempotencyCount != 0 {
+		t.Fatalf("idempotency key count = %d, want 0", idempotencyCount)
+	}
+
+	var outboxCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM outbox_events
+WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
+		outboxAggregateTypeRewardClaim,
+		cmd.Claim.ID,
+		outboxEventTypeRewardClaimed,
+	).Scan(&outboxCount)
+	if err != nil {
+		t.Fatalf("count outbox events: %v", err)
+	}
+
+	if outboxCount != 1 {
+		t.Fatalf("outbox event count = %d, want only pre-seeded event", outboxCount)
+	}
+}
+
+func TestPostgresStoreCreateClaimReplayDoesNotCreateSecondOutboxEvent(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
+	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
+	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	first := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+
+	replay := first
+	replay.Claim.ID = mustUUID(t)
+
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
+
+	firstResult, err := store.CreateClaim(context.Background(), first)
+	if err != nil {
+		t.Fatalf("first CreateClaim returned error: %v", err)
+	}
+
+	replayResult, err := store.CreateClaim(context.Background(), replay)
+	if err != nil {
+		t.Fatalf("replay CreateClaim returned error: %v", err)
+	}
+
+	if replayResult.StatusCode != firstResult.StatusCode {
+		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, firstResult.StatusCode)
+	}
+	if string(replayResult.ResponseBody) != string(firstResult.ResponseBody) {
+		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, firstResult.ResponseBody)
+	}
+	if !replayResult.Replayed {
+		t.Fatal("replay result should be marked replayed")
+	}
+
+	var outboxCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM outbox_events
+WHERE aggregate_type = $1
+  AND event_type = $2
+  AND aggregate_id IN ($3, $4)`,
+		outboxAggregateTypeRewardClaim,
+		outboxEventTypeRewardClaimed,
+		first.Claim.ID,
+		replay.Claim.ID,
+	).Scan(&outboxCount)
+	if err != nil {
+		t.Fatalf("count outbox events: %v", err)
+	}
+
+	if outboxCount != 1 {
+		t.Fatalf("outbox event count = %d, want 1", outboxCount)
+	}
+}
+
+func TestPostgresStoreCreateClaimDuplicateRewardDoesNotCreateOutboxEvent(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
+	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
+	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+t.Name(), playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+t.Name(), playerID, campaignID, rewardID)
+
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
+
+	firstResult, err := store.CreateClaim(context.Background(), first)
+	if err != nil {
+		t.Fatalf("first CreateClaim returned error: %v", err)
+	}
+	if firstResult.StatusCode != CreateClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
+	}
+
+	duplicateResult, err := store.CreateClaim(context.Background(), duplicate)
+	if err != nil {
+		t.Fatalf("duplicate CreateClaim returned error: %v", err)
+	}
+	if duplicateResult.StatusCode != CreateClaimStatusConflict {
+		t.Fatalf("duplicate status = %d, want %d", duplicateResult.StatusCode, CreateClaimStatusConflict)
+	}
+	if duplicateResult.Replayed {
+		t.Fatal("first duplicate response should not be replayed")
+	}
+
+	var totalOutboxCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM outbox_events
+WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
+		outboxAggregateTypeRewardClaim,
+		outboxEventTypeRewardClaimed,
+		first.Claim.ID,
+		duplicate.Claim.ID,
+	).Scan(&totalOutboxCount)
+	if err != nil {
+		t.Fatalf("count outbox events: %v", err)
+	}
+
+	if totalOutboxCount != 1 {
+		t.Fatalf("outbox event count = %d, want 1", totalOutboxCount)
+	}
+}
+
+func TestPostgresStoreCreateClaimKeyMismatchDoesNotCreateOutboxEvent(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
+	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
+	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	first := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+
+	mismatch := first
+	mismatch.Claim.ID = mustUUID(t)
+	mismatch.Claim.RewardID = rewardID + "-different"
+	mismatch.RequestHash = []byte("different-request-hash-32-bytes!")
+
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first)
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, mismatch.Claim.RewardID, mismatch)
+
+	firstResult, err := store.CreateClaim(context.Background(), first)
+	if err != nil {
+		t.Fatalf("first CreateClaim returned error: %v", err)
+	}
+	if firstResult.StatusCode != CreateClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
+	}
+
+	_, err = store.CreateClaim(context.Background(), mismatch)
+	if !errors.Is(err, ErrIdempotencyKeyReused) {
+		t.Fatalf("mismatch CreateClaim error = %v, want %v", err, ErrIdempotencyKeyReused)
+	}
+
+	var outboxCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM outbox_events
+WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
+		outboxAggregateTypeRewardClaim,
+		outboxEventTypeRewardClaimed,
+		first.Claim.ID,
+		mismatch.Claim.ID,
+	).Scan(&outboxCount)
+	if err != nil {
+		t.Fatalf("count outbox events: %v", err)
+	}
+
+	if outboxCount != 1 {
+		t.Fatalf("outbox event count = %d, want 1", outboxCount)
+	}
+}
+
+func TestPostgresStoreOutboxEventsAreUniquePerAggregateAndEventType(t *testing.T) {
+	pool := openIntegrationPool(t)
+
+	aggregateID := mustUUID(t)
+	firstEventID := mustUUID(t)
+	secondEventID := mustUUID(t)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(
+			context.Background(),
+			"DELETE FROM outbox_events WHERE aggregate_type = $1 AND aggregate_id = $2",
+			outboxAggregateTypeRewardClaim,
+			aggregateID,
+		)
+	})
+
+	payload := []byte(`{"schema_version":1}`)
+
+	_, err := pool.Exec(
+		context.Background(),
+		`
+INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+		firstEventID,
+		outboxAggregateTypeRewardClaim,
+		aggregateID,
+		outboxEventTypeRewardClaimed,
+		string(payload),
+		outboxStatusPending,
+	)
+	if err != nil {
+		t.Fatalf("insert first outbox event: %v", err)
+	}
+
+	_, err = pool.Exec(
+		context.Background(),
+		`
+INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+		secondEventID,
+		outboxAggregateTypeRewardClaim,
+		aggregateID,
+		outboxEventTypeRewardClaimed,
+		string(payload),
+		outboxStatusPending,
+	)
+	if err == nil {
+		t.Fatal("insert second outbox event succeeded, want unique constraint violation")
+	}
+}
+
 func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -919,6 +1187,96 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	return pool
+}
+
+func cleanupIntegrationRewardClaimData(t *testing.T, pool *pgxpool.Pool, playerID string, campaignID string, rewardID string) {
+	t.Helper()
+
+	cleanup := func() {
+		_, _ = pool.Exec(
+			context.Background(),
+			`
+DELETE FROM outbox_events
+WHERE aggregate_type = $1
+  AND aggregate_id IN (
+	  SELECT id
+	  FROM reward_claims
+	  WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
+  )`,
+			outboxAggregateTypeRewardClaim,
+			playerID,
+			campaignID,
+			rewardID,
+		)
+
+		_, _ = pool.Exec(
+			context.Background(),
+			`
+DELETE FROM reward_claims
+WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
+			playerID,
+			campaignID,
+			rewardID,
+		)
+	}
+
+	cleanup()
+	t.Cleanup(cleanup)
+}
+
+func cleanupIntegrationCreateClaimData(t *testing.T, pool *pgxpool.Pool, playerID string, campaignID string, rewardID string, cmds ...CreateClaimStoreCommand) {
+	t.Helper()
+
+	cleanup := func() {
+		for _, cmd := range cmds {
+			_, _ = pool.Exec(
+				context.Background(),
+				"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
+				cmd.Operation,
+				cmd.KeyHash,
+			)
+		}
+
+		for _, cmd := range cmds {
+			_, _ = pool.Exec(
+				context.Background(),
+				`
+DELETE FROM outbox_events
+WHERE aggregate_type = $1 AND aggregate_id = $2`,
+				outboxAggregateTypeRewardClaim,
+				cmd.Claim.ID,
+			)
+		}
+
+		_, _ = pool.Exec(
+			context.Background(),
+			`
+DELETE FROM outbox_events
+WHERE aggregate_type = $1
+  AND aggregate_id IN (
+	  SELECT id
+	  FROM reward_claims
+	  WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
+  )`,
+			outboxAggregateTypeRewardClaim,
+			playerID,
+			campaignID,
+			rewardID,
+		)
+
+		_, _ = pool.Exec(
+			context.Background(),
+			`
+DELETE FROM reward_claims
+WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
+			playerID,
+			campaignID,
+			rewardID,
+		)
+	}
+
+	cleanup()
+	t.Cleanup(cleanup)
 }
 
 func newIntegrationCreateClaimCommand(t *testing.T, key string, playerID string, campaignID string, rewardID string) CreateClaimStoreCommand {

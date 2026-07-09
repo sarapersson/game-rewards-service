@@ -17,7 +17,11 @@ import (
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
 
-const defaultHTTPIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
+const (
+	defaultHTTPIntegrationDatabaseURL         = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
+	httpIntegrationOutboxAggregateRewardClaim = "reward_claim"
+	httpIntegrationOutboxEventRewardClaimed   = "RewardClaimed"
+)
 
 func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 	pool := openHTTPIntegrationPool(t)
@@ -35,13 +39,30 @@ func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 		t.Fatalf("hash idempotency key: %v", err)
 	}
 
-	t.Cleanup(func() {
+	cleanup := func() {
 		_, _ = pool.Exec(
 			context.Background(),
 			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
 			idempotency.RewardClaimOperation,
 			keyHash[:],
 		)
+
+		_, _ = pool.Exec(
+			context.Background(),
+			`
+DELETE FROM outbox_events
+WHERE aggregate_type = $1
+  AND aggregate_id IN (
+	  SELECT id
+	  FROM reward_claims
+	  WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
+  )`,
+			httpIntegrationOutboxAggregateRewardClaim,
+			playerID,
+			campaignID,
+			rewardID,
+		)
+
 		_, _ = pool.Exec(
 			context.Background(),
 			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
@@ -49,7 +70,10 @@ func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 			campaignID,
 			rewardID,
 		)
-	})
+	}
+
+	cleanup()
+	t.Cleanup(cleanup)
 
 	first := performRewardClaimRequest(t, service, idempotencyKey, body)
 	if first.Code != http.StatusCreated {
@@ -86,6 +110,33 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 
 	if claimCount != 1 {
 		t.Fatalf("reward claim count = %d, want 1", claimCount)
+	}
+
+	var outboxCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM outbox_events
+WHERE aggregate_type = $1
+  AND event_type = $2
+  AND aggregate_id IN (
+	  SELECT id
+	  FROM reward_claims
+	  WHERE player_id = $3 AND campaign_id = $4 AND reward_id = $5
+  )`,
+		httpIntegrationOutboxAggregateRewardClaim,
+		httpIntegrationOutboxEventRewardClaimed,
+		playerID,
+		campaignID,
+		rewardID,
+	).Scan(&outboxCount)
+	if err != nil {
+		t.Fatalf("count outbox events: %v", err)
+	}
+
+	if outboxCount != 1 {
+		t.Fatalf("outbox event count = %d, want 1", outboxCount)
 	}
 }
 
