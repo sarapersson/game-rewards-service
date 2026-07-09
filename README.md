@@ -6,7 +6,7 @@ The codebase is developed in small, reviewable slices with a focus on correctnes
 
 ## Status
 
-Current implementation: HTTP API scaffold, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, CI, and baseline security checks.
+Current implementation: HTTP API scaffold, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, CI, and baseline security checks.
 
 Implemented so far:
 
@@ -22,7 +22,9 @@ Implemented so far:
 * PostgreSQL 18.4 local development with Docker Compose
 * SQL migrations
 * Core schema for reward claims, idempotency keys, and outbox events
+* Transactional outbox write for `RewardClaimed` events
 * Schema-level constraints for duplicate reward prevention and critical invariants
+* Schema-level uniqueness for one outbox event of each type per aggregate
 * Structured logging with `log/slog`
 * Request ID middleware
 * Panic recovery
@@ -42,7 +44,6 @@ Implemented so far:
 
 Planned work:
 
-* Transactional outbox writes for reward claim events
 * Async outbox worker
 * `/metrics`
 * Prometheus-style low-cardinality metrics
@@ -311,6 +312,8 @@ Example unavailable response:
 ### `POST /v1/reward-claims`
 
 Creates a reward claim for a player in a campaign.
+
+Successful claim creation also stores a `RewardClaimed` event in the PostgreSQL-backed transactional outbox in the same database transaction as the claim and idempotency response. The event is stored with `pending` status for a future async worker; the request path does not call external publishers.
 
 This endpoint requires an `Idempotency-Key` header. The service uses the key to provide deterministic retry behavior for reward claim creation. Raw idempotency keys are not stored; the service stores a SHA-256 key hash, request hash, idempotency state, response status, and response body.
 

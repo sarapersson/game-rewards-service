@@ -19,6 +19,8 @@ This project is an early-stage backend service.
 * Reward claim request bodies are size-limited
 * Duplicate reward claims for the same player, campaign, and reward are prevented by a PostgreSQL unique constraint
 * SQL migrations define schema-level constraints for critical invariants
+* Successful reward claim creation writes a `RewardClaimed` event to the transactional outbox in the same database transaction as the claim and idempotency response
+* Outbox events are protected by a PostgreSQL uniqueness constraint for one event of each type per aggregate
 * The Docker container runs as a non-root user
 * Docker images use versioned base images and avoid `latest` tags
 * GitHub Actions workflows use least-privilege permissions
@@ -30,15 +32,15 @@ This project is an early-stage backend service.
 
 ## Current scope
 
-The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, PostgreSQL-backed reward claim creation, PostgreSQL-backed idempotency state, deterministic idempotency replay, CodeQL, and Go vulnerability checks.
+The current implementation includes the HTTP API scaffold, health endpoints, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, PostgreSQL-backed reward claim creation, PostgreSQL-backed idempotency state, deterministic idempotency replay, transactional outbox writes, CodeQL, and Go vulnerability checks.
 
-The core schema includes tables for reward claims, idempotency keys, and outbox events.
+The core schema includes tables for reward claims, idempotency keys, and outbox events. Successful reward claim creation stores a `RewardClaimed` event in the transactional outbox with `pending` status for future async processing.
 
 The reward-claim API currently requires `Idempotency-Key`, validates the key, stores only the hashed key, records a request hash, persists completed response status and response body, replays completed responses for matching retries, and rejects reused keys with different request payloads.
 
 Validation errors, malformed JSON, unsupported content types, oversized request bodies, missing or invalid idempotency keys, dependency failures, and unexpected internal errors are not stored as idempotent responses.
 
-Transactional outbox writes, async worker processing, metrics, authentication, authorization, rate limiting, and external integrations are not implemented yet.
+Async worker processing, metrics, authentication, authorization, rate limiting, and external integrations are not implemented yet.
 
 More complete security documentation will be added as the service grows, including a threat model for reward claims, idempotency, persistence, and async event delivery.
 
