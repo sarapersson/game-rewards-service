@@ -280,6 +280,31 @@ func TestRewardClaimsHandlerRejectsLargeBody(t *testing.T) {
 	}
 }
 
+func TestRewardClaimsHandlerRejectsLargeBodyAfterValidJSON(t *testing.T) {
+	validBody := `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`
+	body := validBody + strings.Repeat(" ", maxRewardClaimBodyBytes)
+	service := &recordingRewardClaimService{}
+
+	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(body))
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+
+	if !strings.Contains(rec.Body.String(), errorCodeRequestBodyTooLarge) {
+		t.Fatalf("response body = %q, want error code %q", rec.Body.String(), errorCodeRequestBodyTooLarge)
+	}
+
+	if service.called {
+		t.Fatal("expected oversized request not to reach the service")
+	}
+}
+
 func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 	createdAt := time.Date(2026, 7, 6, 12, 34, 56, 123456000, time.UTC)
 
@@ -302,7 +327,7 @@ func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 		routeRewardClaims,
 		strings.NewReader(`{"player_id":" player-123 ","campaign_id":" campaign-123 ","reward_id":" reward-123 "}`),
 	)
-	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set(headerIdempotencyKey, " claim-key-123 ")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

@@ -3,9 +3,11 @@
 package rewards
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -20,134 +22,91 @@ import (
 
 const defaultIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 
-func TestPostgresStoreInsertClaim(t *testing.T) {
+func TestPostgresStoreCreateClaimAllowsSameRewardInDifferentCampaigns(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	claimID := mustUUID(t)
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	firstCampaignID := "campaign-winter-" + testName
+	secondCampaignID := "campaign-spring-" + testName
+	rewardID := "reward-" + testName
 
-	cleanupIntegrationRewardClaimData(t, pool, playerID, campaignID, rewardID)
+	first := newIntegrationCreateClaimCommand(
+		t,
+		"claim-key-first-"+testName,
+		playerID,
+		firstCampaignID,
+		rewardID,
+	)
+	second := newIntegrationCreateClaimCommand(
+		t,
+		"claim-key-second-"+testName,
+		playerID,
+		secondCampaignID,
+		rewardID,
+	)
 
-	claim, err := store.InsertClaim(context.Background(), Claim{
-		ID:         claimID,
-		PlayerID:   playerID,
-		CampaignID: campaignID,
-		RewardID:   rewardID,
-		Status:     ClaimStatusClaimed,
-	})
+	cleanupIntegrationCreateClaimData(t, pool, playerID, firstCampaignID, rewardID, first)
+	cleanupIntegrationCreateClaimData(t, pool, playerID, secondCampaignID, rewardID, second)
+
+	firstResult, err := store.CreateClaim(context.Background(), first)
 	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	if claim.ID != claimID {
-		t.Fatalf("expected id %q, got %q", claimID, claim.ID)
+	if firstResult.StatusCode != CreateClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
 	}
 
-	if claim.PlayerID != playerID {
-		t.Fatalf("expected player_id %q, got %q", playerID, claim.PlayerID)
+	secondResult, err := store.CreateClaim(context.Background(), second)
+	if err != nil {
+		t.Fatalf("second CreateClaim returned error: %v", err)
 	}
 
-	if claim.CampaignID != campaignID {
-		t.Fatalf("expected campaign_id %q, got %q", campaignID, claim.CampaignID)
+	if secondResult.StatusCode != CreateClaimStatusCreated {
+		t.Fatalf("second status = %d, want %d", secondResult.StatusCode, CreateClaimStatusCreated)
 	}
 
-	if claim.RewardID != rewardID {
-		t.Fatalf("expected reward_id %q, got %q", rewardID, claim.RewardID)
+	var claimCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM reward_claims
+WHERE player_id = $1
+  AND reward_id = $2
+  AND campaign_id IN ($3, $4)`,
+		playerID,
+		rewardID,
+		firstCampaignID,
+		secondCampaignID,
+	).Scan(&claimCount)
+	if err != nil {
+		t.Fatalf("count reward claims: %v", err)
 	}
 
-	if claim.Status != ClaimStatusClaimed {
-		t.Fatalf("expected status %q, got %q", ClaimStatusClaimed, claim.Status)
-	}
-
-	if claim.CreatedAt.IsZero() {
-		t.Fatal("expected created_at to be set by database")
-	}
-
-	if claim.UpdatedAt.IsZero() {
-		t.Fatal("expected updated_at to be set by database")
+	if claimCount != 2 {
+		t.Fatalf("reward claim count = %d, want 2", claimCount)
 	}
 }
 
-func TestPostgresStoreInsertClaimMapsDuplicateReward(t *testing.T) {
+func TestPostgresStoreCreateClaimRejectsInvalidQueryTimeout(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := NewPostgresStore(pool, 0)
 
-	firstID := mustUUID(t)
-	secondID := mustUUID(t)
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	testName := integrationTestName(t)
+	cmd := newIntegrationCreateClaimCommand(
+		t,
+		"claim-key-"+testName,
+		"player-"+testName,
+		"campaign-"+testName,
+		"reward-"+testName,
+	)
 
-	cleanupIntegrationRewardClaimData(t, pool, playerID, campaignID, rewardID)
-
-	_, err := store.InsertClaim(context.Background(), Claim{
-		ID:         firstID,
-		PlayerID:   playerID,
-		CampaignID: campaignID,
-		RewardID:   rewardID,
-		Status:     ClaimStatusClaimed,
-	})
-	if err != nil {
-		t.Fatalf("expected first insert to succeed, got %v", err)
-	}
-
-	_, err = store.InsertClaim(context.Background(), Claim{
-		ID:         secondID,
-		PlayerID:   playerID,
-		CampaignID: campaignID,
-		RewardID:   rewardID,
-		Status:     ClaimStatusClaimed,
-	})
-	if !errors.Is(err, ErrDuplicateClaim) {
-		t.Fatalf("expected ErrDuplicateClaim, got %v", err)
-	}
-}
-
-func TestPostgresStoreAllowsSameRewardInDifferentCampaigns(t *testing.T) {
-	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
-
-	firstID := mustUUID(t)
-	secondID := mustUUID(t)
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	firstCampaignID := "campaign-winter-" + strings.ReplaceAll(t.Name(), "/", "-")
-	secondCampaignID := "campaign-spring-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-
-	cleanupIntegrationRewardClaimData(t, pool, playerID, firstCampaignID, rewardID)
-	cleanupIntegrationRewardClaimData(t, pool, playerID, secondCampaignID, rewardID)
-
-	_, err := store.InsertClaim(context.Background(), Claim{
-		ID:         firstID,
-		PlayerID:   playerID,
-		CampaignID: firstCampaignID,
-		RewardID:   rewardID,
-		Status:     ClaimStatusClaimed,
-	})
-	if err != nil {
-		t.Fatalf("expected first insert to succeed, got %v", err)
-	}
-
-	claim, err := store.InsertClaim(context.Background(), Claim{
-		ID:         secondID,
-		PlayerID:   playerID,
-		CampaignID: secondCampaignID,
-		RewardID:   rewardID,
-		Status:     ClaimStatusClaimed,
-	})
-	if err != nil {
-		t.Fatalf("expected same reward in different campaign to succeed, got %v", err)
-	}
-
-	if claim.ID != secondID {
-		t.Fatalf("expected id %q, got %q", secondID, claim.ID)
-	}
-
-	if claim.CampaignID != secondCampaignID {
-		t.Fatalf("expected campaign_id %q, got %q", secondCampaignID, claim.CampaignID)
+	_, err := store.CreateClaim(context.Background(), cmd)
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("CreateClaim error = %v, want ErrInternal", err)
 	}
 }
 
@@ -155,10 +114,11 @@ func TestPostgresStoreCreateClaimCompletesIdempotencyKey(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
@@ -179,18 +139,22 @@ func TestPostgresStoreCreateClaimCompletesIdempotencyKey(t *testing.T) {
 		t.Fatal("response body is empty")
 	}
 
-	var state string
-	var responseStatus int
-	var completedAt time.Time
+	var (
+		state          string
+		responseStatus int
+		rewardClaimID  string
+		completedAt    time.Time
+	)
+
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT state, response_status, completed_at
+SELECT state, response_status, reward_claim_id::text, completed_at
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`,
 		cmd.Operation,
 		cmd.KeyHash,
-	).Scan(&state, &responseStatus, &completedAt)
+	).Scan(&state, &responseStatus, &rewardClaimID, &completedAt)
 	if err != nil {
 		t.Fatalf("query idempotency key: %v", err)
 	}
@@ -201,6 +165,10 @@ WHERE operation = $1 AND key_hash = $2`,
 
 	if responseStatus != CreateClaimStatusCreated {
 		t.Fatalf("response_status = %d, want %d", responseStatus, CreateClaimStatusCreated)
+	}
+
+	if rewardClaimID != cmd.Claim.ID {
+		t.Fatalf("reward_claim_id = %q, want %q", rewardClaimID, cmd.Claim.ID)
 	}
 
 	if completedAt.IsZero() {
@@ -231,10 +199,12 @@ func TestPostgresStoreCreateClaimReplaysCompletedResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+
 	replay := first
 	replay.Claim.ID = mustUUID(t)
 
@@ -254,7 +224,7 @@ func TestPostgresStoreCreateClaimReplaysCompletedResponse(t *testing.T) {
 		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, firstResult.StatusCode)
 	}
 
-	if string(replayResult.ResponseBody) != string(firstResult.ResponseBody) {
+	if !bytes.Equal(replayResult.ResponseBody, firstResult.ResponseBody) {
 		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, firstResult.ResponseBody)
 	}
 
@@ -286,10 +256,11 @@ func TestPostgresStoreCreateClaimRejectsKeyReuseWithDifferentPayload(t *testing.
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	mismatch := first
 	mismatch.Claim.ID = mustUUID(t)
@@ -332,11 +303,12 @@ func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+t.Name(), playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
 
@@ -367,9 +339,12 @@ func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
 		t.Fatalf("duplicate error code = %q, want %q", duplicateBody.Error.Code, DuplicateClaimErrorCode)
 	}
 
-	var state string
-	var responseStatus int
-	var responseBody []byte
+	var (
+		state          string
+		responseStatus int
+		responseBody   []byte
+	)
+
 	err = pool.QueryRow(
 		context.Background(),
 		`
@@ -391,7 +366,7 @@ WHERE operation = $1 AND key_hash = $2`,
 		t.Fatalf("duplicate response_status = %d, want %d", responseStatus, CreateClaimStatusConflict)
 	}
 
-	if string(responseBody) != string(result.ResponseBody) {
+	if !bytes.Equal(responseBody, result.ResponseBody) {
 		t.Fatalf("stored duplicate response body = %s, want %s", responseBody, result.ResponseBody)
 	}
 
@@ -419,11 +394,13 @@ func TestPostgresStoreCreateClaimReplaysDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+t.Name(), playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
+
 	duplicateReplay := duplicate
 	duplicateReplay.Claim.ID = mustUUID(t)
 
@@ -448,7 +425,7 @@ func TestPostgresStoreCreateClaimReplaysDuplicateRewardResponse(t *testing.T) {
 		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, duplicateResult.StatusCode)
 	}
 
-	if string(replayResult.ResponseBody) != string(duplicateResult.ResponseBody) {
+	if !bytes.Equal(replayResult.ResponseBody, duplicateResult.ResponseBody) {
 		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, duplicateResult.ResponseBody)
 	}
 
@@ -480,9 +457,10 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 5*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
 
 	const attempts = 8
 
@@ -490,7 +468,7 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 	for i := range cmds {
 		cmds[i] = newIntegrationCreateClaimCommand(
 			t,
-			"claim-key-"+strings.ReplaceAll(t.Name(), "/", "-")+"-"+strconv.Itoa(i),
+			"claim-key-"+testName+"-"+strconv.Itoa(i),
 			playerID,
 			campaignID,
 			rewardID,
@@ -505,9 +483,8 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 
 	var wg sync.WaitGroup
 	for _, cmd := range cmds {
-		cmd := cmd
-
 		wg.Add(1)
+
 		go func() {
 			defer wg.Done()
 
@@ -529,13 +506,14 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 	close(errs)
 
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent CreateClaim returned error: %v", err)
-		}
+		t.Fatalf("concurrent CreateClaim returned error: %v", err)
 	}
 
-	var createdCount int
-	var conflictCount int
+	var (
+		createdCount  int
+		conflictCount int
+	)
+
 	for result := range results {
 		switch result.StatusCode {
 		case CreateClaimStatusCreated:
@@ -583,10 +561,11 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 5*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	const attempts = 8
 
@@ -604,9 +583,8 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 
 	var wg sync.WaitGroup
 	for _, cmd := range cmds {
-		cmd := cmd
-
 		wg.Add(1)
+
 		go func() {
 			defer wg.Done()
 
@@ -628,14 +606,14 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 	close(errs)
 
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent same-key CreateClaim returned error: %v", err)
-		}
+		t.Fatalf("concurrent same-key CreateClaim returned error: %v", err)
 	}
 
-	var createdCount int
-	var replayedCount int
-	var responseBody string
+	var (
+		createdCount  int
+		replayedCount int
+		responseBody  []byte
+	)
 
 	for result := range results {
 		if result.StatusCode != CreateClaimStatusCreated {
@@ -648,12 +626,12 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 			createdCount++
 		}
 
-		if responseBody == "" {
-			responseBody = string(result.ResponseBody)
+		if responseBody == nil {
+			responseBody = append([]byte(nil), result.ResponseBody...)
 			continue
 		}
 
-		if string(result.ResponseBody) != responseBody {
+		if !bytes.Equal(result.ResponseBody, responseBody) {
 			t.Fatalf("response body = %s, want %s", result.ResponseBody, responseBody)
 		}
 	}
@@ -708,10 +686,11 @@ func TestPostgresStoreCreateClaimReturnsInProgressForProcessingKey(t *testing.T)
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
@@ -758,10 +737,11 @@ func TestPostgresStoreCreateClaimCreatesRewardClaimedOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
@@ -800,15 +780,19 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 	if eventID == "" {
 		t.Fatal("event ID is empty")
 	}
+
 	if aggregateType != outboxAggregateTypeRewardClaim {
 		t.Fatalf("aggregate type = %q, want %q", aggregateType, outboxAggregateTypeRewardClaim)
 	}
+
 	if aggregateID != cmd.Claim.ID {
 		t.Fatalf("aggregate ID = %q, want %q", aggregateID, cmd.Claim.ID)
 	}
+
 	if eventType != outboxEventTypeRewardClaimed {
 		t.Fatalf("event type = %q, want %q", eventType, outboxEventTypeRewardClaimed)
 	}
+
 	if status != outboxStatusPending {
 		t.Fatalf("status = %q, want %q", status, outboxStatusPending)
 	}
@@ -821,30 +805,39 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 	if event.SchemaVersion != rewardClaimedSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", event.SchemaVersion, rewardClaimedSchemaVersion)
 	}
+
 	if event.EventID != eventID {
 		t.Fatalf("payload event ID = %q, want %q", event.EventID, eventID)
 	}
+
 	if event.EventType != outboxEventTypeRewardClaimed {
 		t.Fatalf("payload event type = %q, want %q", event.EventType, outboxEventTypeRewardClaimed)
 	}
+
 	if event.Claim.ClaimID != cmd.Claim.ID {
 		t.Fatalf("payload claim ID = %q, want %q", event.Claim.ClaimID, cmd.Claim.ID)
 	}
+
 	if event.Claim.PlayerID != playerID {
 		t.Fatalf("payload player ID = %q, want %q", event.Claim.PlayerID, playerID)
 	}
+
 	if event.Claim.CampaignID != campaignID {
 		t.Fatalf("payload campaign ID = %q, want %q", event.Claim.CampaignID, campaignID)
 	}
+
 	if event.Claim.RewardID != rewardID {
 		t.Fatalf("payload reward ID = %q, want %q", event.Claim.RewardID, rewardID)
 	}
+
 	if event.Claim.Status != ClaimStatusClaimed {
 		t.Fatalf("payload claim status = %q, want %q", event.Claim.Status, ClaimStatusClaimed)
 	}
+
 	if event.Claim.ClaimedAt.IsZero() {
 		t.Fatal("payload claimed_at is zero")
 	}
+
 	if event.OccurredAt.IsZero() {
 		t.Fatal("payload occurred_at is zero")
 	}
@@ -854,15 +847,16 @@ func TestPostgresStoreCreateClaimRollsBackWhenOutboxInsertFails(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	cleanupConflictingOutboxEvent := func() {
-		_, _ = pool.Exec(
+	runIntegrationCleanup(t, func() error {
+		_, err := pool.Exec(
 			context.Background(),
 			`
 DELETE FROM outbox_events
@@ -871,10 +865,12 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 			cmd.Claim.ID,
 			outboxEventTypeRewardClaimed,
 		)
-	}
+		if err != nil {
+			return fmt.Errorf("delete conflicting outbox event: %w", err)
+		}
 
-	cleanupConflictingOutboxEvent()
-	t.Cleanup(cleanupConflictingOutboxEvent)
+		return nil
+	})
 
 	_, err := pool.Exec(
 		context.Background(),
@@ -956,10 +952,11 @@ func TestPostgresStoreCreateClaimReplayDoesNotCreateSecondOutboxEvent(t *testing
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	replay := first
 	replay.Claim.ID = mustUUID(t)
@@ -979,9 +976,11 @@ func TestPostgresStoreCreateClaimReplayDoesNotCreateSecondOutboxEvent(t *testing
 	if replayResult.StatusCode != firstResult.StatusCode {
 		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, firstResult.StatusCode)
 	}
-	if string(replayResult.ResponseBody) != string(firstResult.ResponseBody) {
+
+	if !bytes.Equal(replayResult.ResponseBody, firstResult.ResponseBody) {
 		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, firstResult.ResponseBody)
 	}
+
 	if !replayResult.Replayed {
 		t.Fatal("replay result should be marked replayed")
 	}
@@ -1013,11 +1012,12 @@ func TestPostgresStoreCreateClaimDuplicateRewardDoesNotCreateOutboxEvent(t *test
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+t.Name(), playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
 
@@ -1025,6 +1025,7 @@ func TestPostgresStoreCreateClaimDuplicateRewardDoesNotCreateOutboxEvent(t *test
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
+
 	if firstResult.StatusCode != CreateClaimStatusCreated {
 		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
 	}
@@ -1033,9 +1034,11 @@ func TestPostgresStoreCreateClaimDuplicateRewardDoesNotCreateOutboxEvent(t *test
 	if err != nil {
 		t.Fatalf("duplicate CreateClaim returned error: %v", err)
 	}
+
 	if duplicateResult.StatusCode != CreateClaimStatusConflict {
 		t.Fatalf("duplicate status = %d, want %d", duplicateResult.StatusCode, CreateClaimStatusConflict)
 	}
+
 	if duplicateResult.Replayed {
 		t.Fatal("first duplicate response should not be replayed")
 	}
@@ -1065,10 +1068,11 @@ func TestPostgresStoreCreateClaimKeyMismatchDoesNotCreateOutboxEvent(t *testing.
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 2*time.Second)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+t.Name(), playerID, campaignID, rewardID)
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	mismatch := first
 	mismatch.Claim.ID = mustUUID(t)
@@ -1082,6 +1086,7 @@ func TestPostgresStoreCreateClaimKeyMismatchDoesNotCreateOutboxEvent(t *testing.
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
+
 	if firstResult.StatusCode != CreateClaimStatusCreated {
 		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
 	}
@@ -1119,13 +1124,18 @@ func TestPostgresStoreOutboxEventsAreUniquePerAggregateAndEventType(t *testing.T
 	firstEventID := mustUUID(t)
 	secondEventID := mustUUID(t)
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(
+	runIntegrationCleanup(t, func() error {
+		_, err := pool.Exec(
 			context.Background(),
 			"DELETE FROM outbox_events WHERE aggregate_type = $1 AND aggregate_id = $2",
 			outboxAggregateTypeRewardClaim,
 			aggregateID,
 		)
+		if err != nil {
+			return fmt.Errorf("delete outbox events: %w", err)
+		}
+
+		return nil
 	})
 
 	payload := []byte(`{"schema_version":1}`)
@@ -1174,7 +1184,14 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal("parse postgres pool config: invalid DATABASE_URL")
+	}
+
+	poolConfig.MaxConns = 8
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		t.Fatalf("open postgres pool: %v", err)
 	}
@@ -1189,56 +1206,29 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func cleanupIntegrationRewardClaimData(t *testing.T, pool *pgxpool.Pool, playerID string, campaignID string, rewardID string) {
+func cleanupIntegrationCreateClaimData(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	playerID, campaignID, rewardID string,
+	cmds ...CreateClaimStoreCommand,
+) {
 	t.Helper()
 
-	cleanup := func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			`
-DELETE FROM outbox_events
-WHERE aggregate_type = $1
-  AND aggregate_id IN (
-	  SELECT id
-	  FROM reward_claims
-	  WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
-  )`,
-			outboxAggregateTypeRewardClaim,
-			playerID,
-			campaignID,
-			rewardID,
-		)
-
-		_, _ = pool.Exec(
-			context.Background(),
-			`
-DELETE FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	}
-
-	cleanup()
-	t.Cleanup(cleanup)
-}
-
-func cleanupIntegrationCreateClaimData(t *testing.T, pool *pgxpool.Pool, playerID string, campaignID string, rewardID string, cmds ...CreateClaimStoreCommand) {
-	t.Helper()
-
-	cleanup := func() {
+	runIntegrationCleanup(t, func() error {
 		for _, cmd := range cmds {
-			_, _ = pool.Exec(
+			_, err := pool.Exec(
 				context.Background(),
 				"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
 				cmd.Operation,
 				cmd.KeyHash,
 			)
+			if err != nil {
+				return fmt.Errorf("delete idempotency key: %w", err)
+			}
 		}
 
 		for _, cmd := range cmds {
-			_, _ = pool.Exec(
+			_, err := pool.Exec(
 				context.Background(),
 				`
 DELETE FROM outbox_events
@@ -1246,25 +1236,31 @@ WHERE aggregate_type = $1 AND aggregate_id = $2`,
 				outboxAggregateTypeRewardClaim,
 				cmd.Claim.ID,
 			)
+			if err != nil {
+				return fmt.Errorf("delete outbox event by aggregate ID: %w", err)
+			}
 		}
 
-		_, _ = pool.Exec(
+		_, err := pool.Exec(
 			context.Background(),
 			`
 DELETE FROM outbox_events
 WHERE aggregate_type = $1
   AND aggregate_id IN (
-	  SELECT id
-	  FROM reward_claims
-	  WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
+      SELECT id
+      FROM reward_claims
+      WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
   )`,
 			outboxAggregateTypeRewardClaim,
 			playerID,
 			campaignID,
 			rewardID,
 		)
+		if err != nil {
+			return fmt.Errorf("delete outbox events for reward claim: %w", err)
+		}
 
-		_, _ = pool.Exec(
+		_, err = pool.Exec(
 			context.Background(),
 			`
 DELETE FROM reward_claims
@@ -1273,13 +1269,32 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 			campaignID,
 			rewardID,
 		)
-	}
+		if err != nil {
+			return fmt.Errorf("delete reward claims: %w", err)
+		}
 
-	cleanup()
-	t.Cleanup(cleanup)
+		return nil
+	})
 }
 
-func newIntegrationCreateClaimCommand(t *testing.T, key string, playerID string, campaignID string, rewardID string) CreateClaimStoreCommand {
+func runIntegrationCleanup(t *testing.T, cleanup func() error) {
+	t.Helper()
+
+	if err := cleanup(); err != nil {
+		t.Fatalf("initial integration cleanup: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("integration cleanup: %v", err)
+		}
+	})
+}
+
+func newIntegrationCreateClaimCommand(
+	t *testing.T,
+	key, playerID, campaignID, rewardID string,
+) CreateClaimStoreCommand {
 	t.Helper()
 
 	keyHash, err := idempotency.HashKey(key)
@@ -1308,6 +1323,12 @@ func newIntegrationCreateClaimCommand(t *testing.T, key string, playerID string,
 		KeyHash:     keyHash[:],
 		RequestHash: requestHash[:],
 	}
+}
+
+func integrationTestName(t *testing.T) string {
+	t.Helper()
+
+	return strings.ReplaceAll(t.Name(), "/", "-")
 }
 
 func mustUUID(t *testing.T) string {

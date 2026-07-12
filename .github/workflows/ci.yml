@@ -22,6 +22,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
+    env:
+      DATABASE_URL: postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable
+
     services:
       postgres:
         image: postgres:18.4

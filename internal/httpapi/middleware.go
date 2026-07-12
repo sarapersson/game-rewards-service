@@ -113,7 +113,6 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				"http request",
 				slog.String("request_id", requestIDFromRequest(r)),
 				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
 				slog.String("route", routeName(r)),
 				slog.Int("status", rec.status),
 				slog.Int64("duration_ms", time.Since(started).Milliseconds()),

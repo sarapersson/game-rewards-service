@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,12 @@ const (
 	defaultDatabaseURL           = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 	defaultDBPingTimeout         = 2 * time.Second
 	defaultDBQueryTimeout        = 2 * time.Second
+	defaultWorkerPollInterval    = 1 * time.Second
+	defaultOutboxLockTTL         = 30 * time.Second
+	defaultOutboxPublishTimeout  = 5 * time.Second
+	defaultOutboxMaxAttempts     = 5
+	defaultOutboxBaseBackoff     = 1 * time.Second
+	defaultOutboxMaxBackoff      = 1 * time.Minute
 )
 
 // Config contains all runtime configuration needed by the service.
@@ -30,6 +37,7 @@ type Config struct {
 	ServiceName     string
 	HTTP            HTTPConfig
 	Database        DatabaseConfig
+	Worker          WorkerConfig
 	Log             LogConfig
 	ShutdownTimeout time.Duration
 }
@@ -48,6 +56,16 @@ type DatabaseConfig struct {
 	URL          string
 	PingTimeout  time.Duration
 	QueryTimeout time.Duration
+}
+
+// WorkerConfig contains outbox worker settings.
+type WorkerConfig struct {
+	PollInterval   time.Duration
+	OutboxLockTTL  time.Duration
+	PublishTimeout time.Duration
+	MaxAttempts    int
+	BaseBackoff    time.Duration
+	MaxBackoff     time.Duration
 }
 
 // LogConfig contains structured logging settings.
@@ -71,6 +89,9 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 		},
 		Database: DatabaseConfig{
 			URL: getString(lookup, "DATABASE_URL", defaultDatabaseURL),
+		},
+		Worker: WorkerConfig{
+			MaxAttempts: defaultOutboxMaxAttempts,
 		},
 		ShutdownTimeout: defaultShutdownTimeout,
 		Log: LogConfig{
@@ -106,6 +127,36 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 	}
 
 	cfg.Database.QueryTimeout, err = getDuration(lookup, "DB_QUERY_TIMEOUT", defaultDBQueryTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.PollInterval, err = getDuration(lookup, "WORKER_POLL_INTERVAL", defaultWorkerPollInterval)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.OutboxLockTTL, err = getDuration(lookup, "OUTBOX_LOCK_TTL", defaultOutboxLockTTL)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.PublishTimeout, err = getDuration(lookup, "OUTBOX_PUBLISH_TIMEOUT", defaultOutboxPublishTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.MaxAttempts, err = getInt(lookup, "OUTBOX_MAX_ATTEMPTS", defaultOutboxMaxAttempts)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.BaseBackoff, err = getDuration(lookup, "OUTBOX_BASE_BACKOFF", defaultOutboxBaseBackoff)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.MaxBackoff, err = getDuration(lookup, "OUTBOX_MAX_BACKOFF", defaultOutboxMaxBackoff)
 	if err != nil {
 		return Config{}, err
 	}
@@ -154,6 +205,24 @@ func getDuration(lookup lookupFunc, key string, defaultValue time.Duration) (tim
 	return duration, nil
 }
 
+func getInt(lookup lookupFunc, key string, defaultValue int) (int, error) {
+	value, ok := lookup(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return defaultValue, nil
+	}
+
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+
+	if parsed <= 0 {
+		return 0, fmt.Errorf("invalid %s: must be greater than zero", key)
+	}
+
+	return parsed, nil
+}
+
 func getLogLevel(lookup lookupFunc, key string, defaultValue slog.Level) (slog.Level, error) {
 	value, ok := lookup(key)
 	if !ok || strings.TrimSpace(value) == "" {
@@ -189,6 +258,25 @@ func validate(cfg Config) error {
 
 	if strings.TrimSpace(cfg.Database.URL) == "" {
 		return fmt.Errorf("DATABASE_URL must not be empty")
+	}
+
+	if cfg.Worker.OutboxLockTTL <= cfg.Worker.PublishTimeout {
+		return fmt.Errorf(
+			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",
+		)
+	}
+
+	remainingLeaseTime := cfg.Worker.OutboxLockTTL - cfg.Worker.PublishTimeout
+	if remainingLeaseTime <= cfg.Database.QueryTimeout {
+		return fmt.Errorf(
+			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",
+		)
+	}
+
+	if cfg.Worker.MaxBackoff < cfg.Worker.BaseBackoff {
+		return fmt.Errorf(
+			"OUTBOX_MAX_BACKOFF must be greater than or equal to OUTBOX_BASE_BACKOFF",
+		)
 	}
 
 	return nil

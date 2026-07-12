@@ -27,6 +27,11 @@ func (e ValidationError) Error() string {
 }
 
 func IsValidationError(err error) bool {
-	var validationErr ValidationError
-	return errors.As(err, &validationErr)
+	var value ValidationError
+	if errors.As(err, &value) {
+		return true
+	}
+
+	var pointer *ValidationError
+	return errors.As(err, &pointer)
 }

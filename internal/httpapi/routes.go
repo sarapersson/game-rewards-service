@@ -16,17 +16,9 @@ func newRouter(logger *slog.Logger, rewardClaims rewardClaimCreator, readinessCh
 	mux.HandleFunc(routeLivez, livezHandler)
 	mux.HandleFunc(routeReadyz, readyzHandler(readinessChecks...))
 	mux.HandleFunc(routeRewardClaims, rewardClaimsHandler(rewardClaims))
-
-	return withMiddleware(notFoundHandler(mux), logger)
-}
-
-func notFoundHandler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != routeLivez && r.URL.Path != routeReadyz && r.URL.Path != routeRewardClaims {
-			writeError(w, http.StatusNotFound, errorCodeNotFound, "Not found")
-			return
-		}
-
-		next.ServeHTTP(w, r)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, errorCodeNotFound, "Not found")
 	})
+
+	return withMiddleware(mux, logger)
 }

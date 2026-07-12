@@ -48,7 +48,10 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 
 	keyHash, err := idempotency.HashKey(cmd.IdempotencyKey)
 	if err != nil {
-		return CreateClaimResult{}, ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"}
+		return CreateClaimResult{}, ValidationError{
+			Field:   "idempotency_key",
+			Message: "idempotency key is invalid",
+		}
 	}
 
 	requestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
@@ -97,7 +100,10 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 	}
 
 	if utf8.RuneCountInString(cmd.PlayerID) > MaxIDLength {
-		return ValidationError{Field: "player_id", Message: "player_id must be at most 128 characters"}
+		return ValidationError{
+			Field:   "player_id",
+			Message: fmt.Sprintf("player_id must be at most %d characters", MaxIDLength),
+		}
 	}
 
 	if cmd.CampaignID == "" {
@@ -105,7 +111,10 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 	}
 
 	if utf8.RuneCountInString(cmd.CampaignID) > MaxIDLength {
-		return ValidationError{Field: "campaign_id", Message: "campaign_id must be at most 128 characters"}
+		return ValidationError{
+			Field:   "campaign_id",
+			Message: fmt.Sprintf("campaign_id must be at most %d characters", MaxIDLength),
+		}
 	}
 
 	if cmd.RewardID == "" {
@@ -113,7 +122,10 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 	}
 
 	if utf8.RuneCountInString(cmd.RewardID) > MaxIDLength {
-		return ValidationError{Field: "reward_id", Message: "reward_id must be at most 128 characters"}
+		return ValidationError{
+			Field:   "reward_id",
+			Message: fmt.Sprintf("reward_id must be at most %d characters", MaxIDLength),
+		}
 	}
 
 	if cmd.IdempotencyKey == "" {
