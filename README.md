@@ -2,11 +2,11 @@
 
 A small Go backend service for an online gaming reward-claim platform.
 
-The codebase is developed in small, reviewable slices with a focus on correctness, operability, and keeping the design easy to reason about.
+The codebase is developed through small, reviewable changes with a focus on correctness, operability, and keeping the design easy to reason about.
 
 ## Status
 
-Current implementation: HTTP API scaffold, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, CI, and baseline security checks.
+Current implementation: Go HTTP API, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, async outbox worker, CI, and baseline security checks.
 
 Implemented so far:
 
@@ -23,6 +23,11 @@ Implemented so far:
 * SQL migrations
 * Core schema for reward claims, idempotency keys, and outbox events
 * Transactional outbox write for `RewardClaimed` events
+* Async outbox worker for publishing due outbox events
+* PostgreSQL outbox polling with `FOR UPDATE SKIP LOCKED`
+* One-event-at-a-time outbox claiming
+* Processing leases, retry backoff, and dead-letter handling for outbox events
+* Lease ownership checks that prevent stale workers from overwriting reclaimed events
 * Schema-level constraints for duplicate reward prevention and critical invariants
 * Schema-level uniqueness for one outbox event of each type per aggregate
 * Structured logging with `log/slog`
@@ -30,6 +35,7 @@ Implemented so far:
 * Panic recovery
 * Basic secure headers
 * Environment-based configuration
+* Explicit database and publisher timeouts
 * Graceful shutdown
 * Unit tests
 * PostgreSQL integration tests
@@ -44,7 +50,6 @@ Implemented so far:
 
 Planned work:
 
-* Async outbox worker
 * `/metrics`
 * Prometheus-style low-cardinality metrics
 * Container scanning and SBOM generation
@@ -71,6 +76,34 @@ Run the API:
 ```bash
 make run
 ```
+
+Run the outbox worker in a separate terminal:
+
+```bash
+make run-worker
+```
+
+Run PostgreSQL, the API, and the worker together with Docker Compose:
+
+```bash
+make stack-up
+```
+
+Follow the service logs:
+
+```bash
+make stack-logs
+```
+
+Stop the local stack:
+
+```bash
+make stack-down
+```
+
+The worker claims one due outbox event at a time, simulates publishing through the local publisher boundary, and marks the event as `published`, schedules retry with backoff, or moves it to `dead_letter` after the configured maximum attempts.
+
+Additional worker processes can be run for more throughput. PostgreSQL coordinates concurrent workers through processing leases and `FOR UPDATE SKIP LOCKED`.
 
 The API fails fast on startup if PostgreSQL cannot be reached. After startup, `/readyz` reports dependency readiness and returns `503` if PostgreSQL becomes unavailable.
 
@@ -111,7 +144,7 @@ Start local PostgreSQL:
 make db-up
 ```
 
-Stop local PostgreSQL:
+Stop the local Compose stack, including PostgreSQL and any running API or worker containers:
 
 ```bash
 make db-down
@@ -135,13 +168,15 @@ Show migration version:
 make migrate-status
 ```
 
-Verify migrations can apply, roll back, and re-apply:
+Verify the latest migration can apply, roll back, and re-apply:
 
 ```bash
 make db-check
 ```
 
-`db-check` applies pending migrations, rolls back the latest migration, and applies migrations again against the configured database. It is intended for clean local and CI databases. If you have created manual local reward claim data, clear it or reset the local database before running `db-check`. Do not run it against shared, staging, or production-like databases.
+`db-check` applies pending migrations, rolls back the latest migration, and applies migrations again against the configured database. It verifies rollback of the latest migration only; it does not roll the complete historical migration chain down to version zero.
+
+The command is intended for clean local and CI databases. If you have created manual local reward claim data, clear it or reset the local database before running `db-check`. Do not run it against shared, staging, or production-like databases.
 
 The local Docker Compose setup uses PostgreSQL 18.4 and development-only credentials. PostgreSQL is bound to localhost for local development. Do not reuse the local credentials outside local development.
 
@@ -212,7 +247,7 @@ The repository should be configured so changes to `main` go through pull request
 
 ## Build
 
-Build the API binary:
+Build the API and worker binaries:
 
 ```bash
 make build
@@ -226,17 +261,25 @@ Build the local Docker image:
 make docker-build
 ```
 
-Run the image with a reachable PostgreSQL database:
+Run the API from the image with a reachable PostgreSQL database:
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 127.0.0.1:8080:8080 \
   -e DATABASE_URL='postgres://game_rewards:game_rewards_dev_password@host.docker.internal:5432/game_rewards?sslmode=disable' \
   game-rewards-service:local
 ```
 
-The image uses versioned base images, avoids `latest` tags, and runs the API as a non-root user.
+Run the worker from the same image:
 
-When running the Docker image directly, provide a `DATABASE_URL` that the container can reach. The API pings PostgreSQL during startup and exits if the dependency is unavailable.
+```bash
+docker run --rm \
+  -e DATABASE_URL='postgres://game_rewards:game_rewards_dev_password@host.docker.internal:5432/game_rewards?sslmode=disable' \
+  game-rewards-service:local /usr/local/bin/worker
+```
+
+The image uses versioned base images, avoids `latest` tags, and runs as a non-root user.
+
+When running the Docker image directly, provide a `DATABASE_URL` that the container can reach. The API and worker both ping PostgreSQL during startup and exit if the dependency is unavailable.
 
 `host.docker.internal` works out of the box on Docker Desktop. On Linux, use a reachable host address or Docker network configuration for PostgreSQL.
 
@@ -258,6 +301,12 @@ For local development, `.env.example` documents the default environment variable
 | `DATABASE_URL`             | `postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable` |
 | `DB_PING_TIMEOUT`          | `2s`                                                                                            |
 | `DB_QUERY_TIMEOUT`         | `2s`                                                                                            |
+| `WORKER_POLL_INTERVAL`     | `1s`                                                                                            |
+| `OUTBOX_LOCK_TTL`          | `30s`                                                                                           |
+| `OUTBOX_PUBLISH_TIMEOUT`   | `5s`                                                                                            |
+| `OUTBOX_MAX_ATTEMPTS`      | `5`                                                                                             |
+| `OUTBOX_BASE_BACKOFF`      | `1s`                                                                                            |
+| `OUTBOX_MAX_BACKOFF`       | `1m`                                                                                            |
 | `SHUTDOWN_TIMEOUT`         | `10s`                                                                                           |
 | `LOG_LEVEL`                | `info`                                                                                          |
 
@@ -266,6 +315,16 @@ Example:
 ```bash
 LOG_LEVEL=debug HTTP_ADDR=:9090 make run
 ```
+
+Run the worker with custom retry settings:
+
+```bash
+OUTBOX_MAX_ATTEMPTS=3 OUTBOX_BASE_BACKOFF=2s make run-worker
+```
+
+`OUTBOX_LOCK_TTL` must be greater than `OUTBOX_PUBLISH_TIMEOUT` plus `DB_QUERY_TIMEOUT`. This leaves enough lease time for the worker to persist the publish result after the publisher call completes.
+
+`OUTBOX_MAX_BACKOFF` must be greater than or equal to `OUTBOX_BASE_BACKOFF`.
 
 ## API
 
@@ -313,7 +372,7 @@ Example unavailable response:
 
 Creates a reward claim for a player in a campaign.
 
-Successful claim creation also stores a `RewardClaimed` event in the PostgreSQL-backed transactional outbox in the same database transaction as the claim and idempotency response. The event is stored with `pending` status for a future async worker; the request path does not call external publishers.
+Successful claim creation also stores a `RewardClaimed` event in the PostgreSQL-backed transactional outbox in the same database transaction as the claim and idempotency response. The event is stored with `pending` status for the async outbox worker; the request path does not call external publishers.
 
 This endpoint requires an `Idempotency-Key` header. The service uses the key to provide deterministic retry behavior for reward claim creation. Raw idempotency keys are not stored; the service stores a SHA-256 key hash, request hash, idempotency state, response status, and response body.
 
@@ -483,11 +542,57 @@ Allow: GET
 Content-Type: application/json
 ```
 
+## Outbox worker
+
+The outbox worker processes events created by the reward claim request path.
+
+The request transaction creates a pending `RewardClaimed` outbox event together with the reward claim and idempotency response. The worker later claims due events from PostgreSQL, publishes them through a small publisher interface, and updates the outbox row based on the result.
+
+Current local publisher behavior is intentionally simple: it logs a simulated publish and returns success. This keeps the worker focused on reliable asynchronous processing without introducing Kafka, Redis, webhooks, or another external broker.
+
+Worker state transitions:
+
+```text
+pending -> processing
+processing -> published
+processing -> pending       retry scheduled with backoff
+processing -> dead_letter
+```
+
+The worker uses processing leases:
+
+* Each worker claims one event at a time.
+* `locked_by` identifies the worker process that claimed the event.
+* Worker identifiers include a cryptographically random process-instance component.
+* `locked_until` allows another worker to reclaim the event if the original worker crashes.
+* `FOR UPDATE SKIP LOCKED` allows safe horizontal polling without two workers claiming the same due row at the same time.
+* Publish completion, retry, and dead-letter updates require the acting worker to still own the lease.
+* A stale worker cannot overwrite event state after another worker has reclaimed the event.
+
+Failure behavior:
+
+* Successful publish marks the event as `published`.
+* Publish failure increments `attempts` and schedules retry by moving `available_at` into the future.
+* Retry timestamps are calculated using PostgreSQL time.
+* Raw publisher errors are not logged or persisted by the worker.
+* Publisher failures are stored as controlled values such as `publish_failed`, `publish_timeout`, and `publish_canceled`.
+* Publish timeout is treated as a publish failure and goes through retry/backoff.
+* Worker shutdown cancels in-flight work without incrementing attempts; the event remains `processing` until the lease expires.
+* Worker shutdown is bounded by `SHUTDOWN_TIMEOUT`.
+* After `OUTBOX_MAX_ATTEMPTS`, the worker marks the event as `dead_letter`.
+
+Database operations use `DB_QUERY_TIMEOUT`, and publisher calls use `OUTBOX_PUBLISH_TIMEOUT`.
+
+Delivery semantics are at-least-once. If publish succeeds but the worker crashes before marking the row as `published`, the event may be published again after lease expiry. Downstream consumers are expected to deduplicate by event ID.
+
 ## Project structure
 
 ```text
 cmd/api
   Application entrypoint.
+
+cmd/worker
+  Outbox worker entrypoint.
 
 internal/config
   Loads and validates runtime configuration.
@@ -497,6 +602,9 @@ internal/httpapi
 
 internal/idempotency
   Deterministic hashing helpers for idempotency keys and accepted request payloads.
+
+internal/outbox
+  Async outbox worker, publisher boundary, retry/backoff logic, and PostgreSQL-backed outbox processing.
 
 internal/postgres
   PostgreSQL pool setup and health checks.
@@ -508,7 +616,7 @@ migrations
   Versioned SQL migrations for the core schema.
 
 compose.yaml
-  Local PostgreSQL development environment.
+  Local PostgreSQL, API, and worker development stack.
 ```
 
 ## Before opening a pull request
