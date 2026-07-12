@@ -5,6 +5,7 @@ tmp/
 
 # Test and coverage output
 coverage.out
+coverage*.out
 *.test
 
 # Local environment files
