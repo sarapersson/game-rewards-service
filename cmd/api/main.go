@@ -52,14 +52,9 @@ func run() int {
 
 	errCh := make(chan error, 1)
 
-	go func() {
-		logger.Info(
-			"starting http server",
-			slog.String("addr", server.Addr),
-			slog.String("app_env", cfg.AppEnv),
-			slog.String("service_name", cfg.ServiceName),
-		)
+	logger.Info("starting http server", slog.String("addr", server.Addr))
 
+	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

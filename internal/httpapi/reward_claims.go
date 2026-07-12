@@ -149,13 +149,17 @@ func decodeCreateRewardClaimRequest(w http.ResponseWriter, r *http.Request) (cre
 		return createRewardClaimRequest{}, false
 	}
 
-	var extra struct{}
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+	var extra json.RawMessage
+	switch err := decoder.Decode(&extra); {
+	case errors.Is(err, io.EOF):
+		return req, true
+	case err == nil:
 		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body must contain a single JSON object")
 		return createRewardClaimRequest{}, false
+	default:
+		writeDecodeError(w, err)
+		return createRewardClaimRequest{}, false
 	}
-
-	return req, true
 }
 
 func writeDecodeError(w http.ResponseWriter, err error) {
@@ -185,7 +189,7 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 	}
 
 	if utf8.RuneCountInString(playerID) > rewards.MaxIDLength {
-		return fmt.Errorf("player_id must be at most 128 characters")
+		return fmt.Errorf("player_id must be at most %d characters", rewards.MaxIDLength)
 	}
 
 	campaignID := strings.TrimSpace(req.CampaignID)
@@ -194,7 +198,7 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 	}
 
 	if utf8.RuneCountInString(campaignID) > rewards.MaxIDLength {
-		return fmt.Errorf("campaign_id must be at most 128 characters")
+		return fmt.Errorf("campaign_id must be at most %d characters", rewards.MaxIDLength)
 	}
 
 	rewardID := strings.TrimSpace(req.RewardID)
@@ -203,7 +207,7 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 	}
 
 	if utf8.RuneCountInString(rewardID) > rewards.MaxIDLength {
-		return fmt.Errorf("reward_id must be at most 128 characters")
+		return fmt.Errorf("reward_id must be at most %d characters", rewards.MaxIDLength)
 	}
 
 	return nil

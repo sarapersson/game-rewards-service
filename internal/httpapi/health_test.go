@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -95,14 +96,48 @@ func TestReadyzReturnsReadyWhenChecksPass(t *testing.T) {
 }
 
 func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
+	const dependencyError = "postgres down with internal connection details"
+
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
 
 	newRouter(testLogger(), nil, ReadinessCheck{
 		Name: "postgres",
 		Check: func(context.Context) error {
-			return errors.New("postgres down")
+			return errors.New(dependencyError)
 		},
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+
+	assertJSONContentType(t, rec)
+
+	if strings.Contains(rec.Body.String(), dependencyError) {
+		t.Fatal("readiness response exposed the dependency error")
+	}
+
+	var body readinessResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if body.Status != "not_ready" {
+		t.Fatalf("expected status not_ready, got %q", body.Status)
+	}
+
+	if body.Checks["postgres"] != "error" {
+		t.Fatalf("expected postgres check error, got %q", body.Checks["postgres"])
+	}
+}
+
+func TestReadyzReturnsServiceUnavailableWhenCheckIsNil(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
+
+	newRouter(testLogger(), nil, ReadinessCheck{
+		Name: "postgres",
 	}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
@@ -122,6 +157,51 @@ func TestReadyzReturnsServiceUnavailableWhenCheckFails(t *testing.T) {
 
 	if body.Checks["postgres"] != "error" {
 		t.Fatalf("expected postgres check error, got %q", body.Checks["postgres"])
+	}
+}
+
+func TestReadyzReportsAllChecksWhenOneFails(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
+
+	newRouter(
+		testLogger(),
+		nil,
+		ReadinessCheck{
+			Name: "postgres",
+			Check: func(context.Context) error {
+				return errors.New("postgres unavailable")
+			},
+		},
+		ReadinessCheck{
+			Name: "publisher",
+			Check: func(context.Context) error {
+				return nil
+			},
+		},
+	).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+
+	assertJSONContentType(t, rec)
+
+	var body readinessResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if body.Status != "not_ready" {
+		t.Fatalf("expected status not_ready, got %q", body.Status)
+	}
+
+	if body.Checks["postgres"] != "error" {
+		t.Fatalf("expected postgres check error, got %q", body.Checks["postgres"])
+	}
+
+	if body.Checks["publisher"] != "ok" {
+		t.Fatalf("expected publisher check ok, got %q", body.Checks["publisher"])
 	}
 }
 
@@ -186,7 +266,7 @@ func assertJSONContentType(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-func assertErrorResponse(t *testing.T, rec *httptest.ResponseRecorder, wantCode string, wantMessage string) {
+func assertErrorResponse(t *testing.T, rec *httptest.ResponseRecorder, wantCode, wantMessage string) {
 	t.Helper()
 
 	var body errorResponse

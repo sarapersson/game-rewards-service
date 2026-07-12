@@ -28,10 +28,11 @@ func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 	store := rewards.NewPostgresStore(pool, 2*time.Second)
 	service := rewards.NewService(store)
 
-	playerID := "player-" + strings.ReplaceAll(t.Name(), "/", "-")
-	campaignID := "campaign-" + strings.ReplaceAll(t.Name(), "/", "-")
-	rewardID := "reward-" + strings.ReplaceAll(t.Name(), "/", "-")
-	idempotencyKey := "claim-key-" + strings.ReplaceAll(t.Name(), "/", "-")
+	testName := strings.ReplaceAll(t.Name(), "/", "-")
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	idempotencyKey := "claim-key-" + testName
 	body := `{"player_id":"` + playerID + `","campaign_id":"` + campaignID + `","reward_id":"` + rewardID + `"}`
 
 	keyHash, err := idempotency.HashKey(idempotencyKey)
@@ -39,41 +40,24 @@ func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 		t.Fatalf("hash idempotency key: %v", err)
 	}
 
-	cleanup := func() {
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-			idempotency.RewardClaimOperation,
+	cleanupHTTPIntegrationRewardClaim(
+		t,
+		pool,
+		keyHash[:],
+		playerID,
+		campaignID,
+		rewardID,
+	)
+	t.Cleanup(func() {
+		cleanupHTTPIntegrationRewardClaim(
+			t,
+			pool,
 			keyHash[:],
-		)
-
-		_, _ = pool.Exec(
-			context.Background(),
-			`
-DELETE FROM outbox_events
-WHERE aggregate_type = $1
-  AND aggregate_id IN (
-	  SELECT id
-	  FROM reward_claims
-	  WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
-  )`,
-			httpIntegrationOutboxAggregateRewardClaim,
 			playerID,
 			campaignID,
 			rewardID,
 		)
-
-		_, _ = pool.Exec(
-			context.Background(),
-			"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
-			playerID,
-			campaignID,
-			rewardID,
-		)
-	}
-
-	cleanup()
-	t.Cleanup(cleanup)
+	})
 
 	first := performRewardClaimRequest(t, service, idempotencyKey, body)
 	if first.Code != http.StatusCreated {
@@ -121,9 +105,9 @@ FROM outbox_events
 WHERE aggregate_type = $1
   AND event_type = $2
   AND aggregate_id IN (
-	  SELECT id
-	  FROM reward_claims
-	  WHERE player_id = $3 AND campaign_id = $4 AND reward_id = $5
+      SELECT id
+      FROM reward_claims
+      WHERE player_id = $3 AND campaign_id = $4 AND reward_id = $5
   )`,
 		httpIntegrationOutboxAggregateRewardClaim,
 		httpIntegrationOutboxEventRewardClaimed,
@@ -140,7 +124,7 @@ WHERE aggregate_type = $1
 	}
 }
 
-func performRewardClaimRequest(t *testing.T, service rewardClaimCreator, idempotencyKey string, body string) *httptest.ResponseRecorder {
+func performRewardClaimRequest(t *testing.T, service rewardClaimCreator, idempotencyKey, body string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(body))
@@ -151,6 +135,57 @@ func performRewardClaimRequest(t *testing.T, service rewardClaimCreator, idempot
 	rewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	return rec
+}
+
+func cleanupHTTPIntegrationRewardClaim(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	keyHash []byte,
+	playerID string,
+	campaignID string,
+	rewardID string,
+) {
+	t.Helper()
+
+	_, err := pool.Exec(
+		context.Background(),
+		"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
+		idempotency.RewardClaimOperation,
+		keyHash,
+	)
+	if err != nil {
+		t.Fatalf("cleanup idempotency key: %v", err)
+	}
+
+	_, err = pool.Exec(
+		context.Background(),
+		`
+DELETE FROM outbox_events
+WHERE aggregate_type = $1
+  AND aggregate_id IN (
+      SELECT id
+      FROM reward_claims
+      WHERE player_id = $2 AND campaign_id = $3 AND reward_id = $4
+  )`,
+		httpIntegrationOutboxAggregateRewardClaim,
+		playerID,
+		campaignID,
+		rewardID,
+	)
+	if err != nil {
+		t.Fatalf("cleanup outbox events: %v", err)
+	}
+
+	_, err = pool.Exec(
+		context.Background(),
+		"DELETE FROM reward_claims WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3",
+		playerID,
+		campaignID,
+		rewardID,
+	)
+	if err != nil {
+		t.Fatalf("cleanup reward claims: %v", err)
+	}
 }
 
 func openHTTPIntegrationPool(t *testing.T) *pgxpool.Pool {
@@ -164,7 +199,12 @@ func openHTTPIntegrationPool(t *testing.T) *pgxpool.Pool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal("parse postgres pool config: invalid DATABASE_URL")
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		t.Fatalf("open postgres pool: %v", err)
 	}

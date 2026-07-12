@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,7 +93,7 @@ func TestRecovererReturnsJSONInternalError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
 
-	handler := withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		panic("boom")
 	}), testLogger())
 
@@ -119,5 +121,35 @@ func TestMiddlewareRejectsInvalidRequestID(t *testing.T) {
 
 	if got == "bad request id" {
 		t.Fatal("expected invalid request ID to be replaced")
+	}
+}
+
+func TestRequestLoggerDoesNotLogRawRequestPath(t *testing.T) {
+	const rawPath = "/tokens/do-not-log-this-value"
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+	handler := withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}), logger)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, rawPath, nil)
+
+	handler.ServeHTTP(rec, req)
+
+	logOutput := logs.String()
+
+	if strings.Contains(logOutput, rawPath) {
+		t.Fatal("request log exposed the raw request path")
+	}
+
+	if strings.Contains(logOutput, `"path"`) {
+		t.Fatal("request log contained a path field")
+	}
+
+	if !strings.Contains(logOutput, `"route":"unknown"`) {
+		t.Fatalf("request log = %q, want unknown route", logOutput)
 	}
 }
