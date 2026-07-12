@@ -27,21 +27,13 @@ type PostgresStore struct {
 }
 
 func NewPostgresStore(pool *pgxpool.Pool, queryTimeout time.Duration) *PostgresStore {
-	return &PostgresStore{
-		pool:         pool,
-		queryTimeout: queryTimeout,
-	}
+	return &PostgresStore{pool: pool, queryTimeout: queryTimeout}
 }
 
 func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {
-	if s == nil || s.pool == nil {
-		return CreateClaimResult{}, ErrUnavailable
-	}
-
-	queryCtx := ctx
-	cancel := func() {}
-	if s.queryTimeout > 0 {
-		queryCtx, cancel = context.WithTimeout(ctx, s.queryTimeout)
+	queryCtx, cancel, err := s.queryContext(ctx)
+	if err != nil {
+		return CreateClaimResult{}, err
 	}
 	defer cancel()
 
@@ -101,24 +93,17 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 	return result, nil
 }
 
-func (s *PostgresStore) InsertClaim(ctx context.Context, claim Claim) (Claim, error) {
+func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
 	if s == nil || s.pool == nil {
-		return Claim{}, ErrUnavailable
+		return nil, nil, ErrUnavailable
 	}
 
-	queryCtx := ctx
-	cancel := func() {}
-	if s.queryTimeout > 0 {
-		queryCtx, cancel = context.WithTimeout(ctx, s.queryTimeout)
-	}
-	defer cancel()
-
-	created, err := insertClaim(queryCtx, s.pool, claim)
-	if err != nil {
-		return Claim{}, err
+	if s.queryTimeout <= 0 {
+		return nil, nil, fmt.Errorf("reward claims store query timeout must be greater than zero: %w", ErrInternal)
 	}
 
-	return created, nil
+	queryCtx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	return queryCtx, cancel, nil
 }
 
 func insertProcessingIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (bool, error) {
@@ -129,6 +114,7 @@ ON CONFLICT (operation, key_hash) DO NOTHING
 RETURNING state`
 
 	var state string
+
 	err := tx.QueryRow(
 		ctx,
 		query,
@@ -161,12 +147,14 @@ FOR UPDATE`
 		responseStatus sql.NullInt64
 		responseBody   []byte
 	)
-	if err := tx.QueryRow(ctx, query, cmd.Operation, cmd.KeyHash).Scan(
+
+	err := tx.QueryRow(ctx, query, cmd.Operation, cmd.KeyHash).Scan(
 		&requestHash,
 		&state,
 		&responseStatus,
 		&responseBody,
-	); err != nil {
+	)
+	if err != nil {
 		return CreateClaimResult{}, mapPostgresError(err)
 	}
 
@@ -216,12 +204,12 @@ func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCo
 func insertRewardClaimedOutboxEvent(ctx context.Context, tx pgx.Tx, claim Claim) error {
 	eventID, err := NewUUIDV4()
 	if err != nil {
-		return fmt.Errorf("create reward claimed outbox event id: %v: %w", err, ErrInternal)
+		return fmt.Errorf("create reward claimed outbox event id: %w", ErrInternal)
 	}
 
 	payload, err := json.Marshal(NewRewardClaimedEvent(eventID, claim))
 	if err != nil {
-		return fmt.Errorf("marshal reward claimed outbox payload: %v: %w", err, ErrInternal)
+		return fmt.Errorf("marshal reward claimed outbox payload: %w", ErrInternal)
 	}
 
 	const query = `
@@ -261,7 +249,14 @@ func completeDuplicateClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStore
 	}, nil
 }
 
-func completeIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand, statusCode int, responseBody []byte, claimID string) error {
+func completeIdempotencyKey(
+	ctx context.Context,
+	tx pgx.Tx,
+	cmd CreateClaimStoreCommand,
+	statusCode int,
+	responseBody []byte,
+	claimID string,
+) error {
 	const query = `
 UPDATE idempotency_keys
 SET state = $3,
@@ -270,7 +265,10 @@ SET state = $3,
     reward_claim_id = NULLIF($6, '')::uuid,
     completed_at = now(),
     updated_at = now()
-WHERE operation = $1 AND key_hash = $2`
+WHERE operation = $1
+  AND key_hash = $2
+  AND request_hash = $7
+  AND state = $8`
 
 	tag, err := tx.Exec(
 		ctx,
@@ -281,6 +279,8 @@ WHERE operation = $1 AND key_hash = $2`
 		statusCode,
 		responseBody,
 		claimID,
+		cmd.RequestHash,
+		idempotencyStateProcessing,
 	)
 	if err != nil {
 		return mapPostgresError(err)
@@ -297,37 +297,6 @@ type claimInserter interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func insertClaim(ctx context.Context, db claimInserter, claim Claim) (Claim, error) {
-	const query = `
-INSERT INTO reward_claims (id, player_id, campaign_id, reward_id, status)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id::text, player_id, campaign_id, reward_id, status, created_at, updated_at`
-
-	var created Claim
-	err := db.QueryRow(
-		ctx,
-		query,
-		claim.ID,
-		claim.PlayerID,
-		claim.CampaignID,
-		claim.RewardID,
-		claim.Status,
-	).Scan(
-		&created.ID,
-		&created.PlayerID,
-		&created.CampaignID,
-		&created.RewardID,
-		&created.Status,
-		&created.CreatedAt,
-		&created.UpdatedAt,
-	)
-	if err != nil {
-		return Claim{}, mapPostgresError(err)
-	}
-
-	return created, nil
-}
-
 func insertClaimForIdempotentCreate(ctx context.Context, db claimInserter, claim Claim) (Claim, error) {
 	const query = `
 INSERT INTO reward_claims (id, player_id, campaign_id, reward_id, status)
@@ -336,6 +305,7 @@ ON CONFLICT (player_id, campaign_id, reward_id) DO NOTHING
 RETURNING id::text, player_id, campaign_id, reward_id, status, created_at, updated_at`
 
 	var created Claim
+
 	err := db.QueryRow(
 		ctx,
 		query,
