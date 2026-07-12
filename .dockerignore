@@ -6,11 +6,11 @@ dist/
 tmp/
 
 coverage.out
+coverage*.out
 *.test
 
 .env
 .env.*
-!.env.example
 
 *.log
 
