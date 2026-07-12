@@ -53,6 +53,30 @@ func TestLoadWithLookupUsesDefaults(t *testing.T) {
 		t.Fatalf("expected database query timeout 2s, got %s", cfg.Database.QueryTimeout)
 	}
 
+	if cfg.Worker.PollInterval != time.Second {
+		t.Fatalf("expected worker poll interval 1s, got %s", cfg.Worker.PollInterval)
+	}
+
+	if cfg.Worker.OutboxLockTTL != 30*time.Second {
+		t.Fatalf("expected outbox lock TTL 30s, got %s", cfg.Worker.OutboxLockTTL)
+	}
+
+	if cfg.Worker.PublishTimeout != 5*time.Second {
+		t.Fatalf("expected outbox publish timeout 5s, got %s", cfg.Worker.PublishTimeout)
+	}
+
+	if cfg.Worker.MaxAttempts != 5 {
+		t.Fatalf("expected outbox max attempts 5, got %d", cfg.Worker.MaxAttempts)
+	}
+
+	if cfg.Worker.BaseBackoff != time.Second {
+		t.Fatalf("expected outbox base backoff 1s, got %s", cfg.Worker.BaseBackoff)
+	}
+
+	if cfg.Worker.MaxBackoff != time.Minute {
+		t.Fatalf("expected outbox max backoff 1m, got %s", cfg.Worker.MaxBackoff)
+	}
+
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("expected shutdown timeout 10s, got %s", cfg.ShutdownTimeout)
 	}
@@ -74,6 +98,12 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		"DATABASE_URL":             "postgres://custom:secret@localhost:5433/custom?sslmode=disable",
 		"DB_PING_TIMEOUT":          "750ms",
 		"DB_QUERY_TIMEOUT":         "900ms",
+		"WORKER_POLL_INTERVAL":     "250ms",
+		"OUTBOX_LOCK_TTL":          "45s",
+		"OUTBOX_PUBLISH_TIMEOUT":   "10s",
+		"OUTBOX_MAX_ATTEMPTS":      "7",
+		"OUTBOX_BASE_BACKOFF":      "2s",
+		"OUTBOX_MAX_BACKOFF":       "2m",
 		"SHUTDOWN_TIMEOUT":         "3s",
 		"LOG_LEVEL":                "debug",
 	}))
@@ -119,6 +149,30 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 
 	if cfg.Database.QueryTimeout != 900*time.Millisecond {
 		t.Fatalf("expected database query timeout 900ms, got %s", cfg.Database.QueryTimeout)
+	}
+
+	if cfg.Worker.PollInterval != 250*time.Millisecond {
+		t.Fatalf("expected worker poll interval 250ms, got %s", cfg.Worker.PollInterval)
+	}
+
+	if cfg.Worker.OutboxLockTTL != 45*time.Second {
+		t.Fatalf("expected outbox lock TTL 45s, got %s", cfg.Worker.OutboxLockTTL)
+	}
+
+	if cfg.Worker.PublishTimeout != 10*time.Second {
+		t.Fatalf("expected outbox publish timeout 10s, got %s", cfg.Worker.PublishTimeout)
+	}
+
+	if cfg.Worker.MaxAttempts != 7 {
+		t.Fatalf("expected outbox max attempts 7, got %d", cfg.Worker.MaxAttempts)
+	}
+
+	if cfg.Worker.BaseBackoff != 2*time.Second {
+		t.Fatalf("expected outbox base backoff 2s, got %s", cfg.Worker.BaseBackoff)
+	}
+
+	if cfg.Worker.MaxBackoff != 2*time.Minute {
+		t.Fatalf("expected outbox max backoff 2m, got %s", cfg.Worker.MaxBackoff)
 	}
 
 	if cfg.ShutdownTimeout != 3*time.Second {
@@ -225,6 +279,118 @@ func TestLoadWithLookupRejectsInvalidLogLevel(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "invalid LOG_LEVEL") {
 		t.Fatalf("expected LOG_LEVEL error, got %v", err)
+	}
+}
+
+func TestLoadWithLookupRejectsInvalidInt(t *testing.T) {
+	_, err := loadWithLookup(mapLookup(map[string]string{
+		"OUTBOX_MAX_ATTEMPTS": "not-an-int",
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid OUTBOX_MAX_ATTEMPTS") {
+		t.Fatalf("expected OUTBOX_MAX_ATTEMPTS error, got %v", err)
+	}
+}
+
+func TestLoadWithLookupRejectsNonPositiveInt(t *testing.T) {
+	_, err := loadWithLookup(mapLookup(map[string]string{
+		"OUTBOX_MAX_ATTEMPTS": "0",
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "OUTBOX_MAX_ATTEMPTS") {
+		t.Fatalf("expected OUTBOX_MAX_ATTEMPTS error, got %v", err)
+	}
+}
+
+func TestLoadWithLookupValidatesWorkerLeaseBudget(t *testing.T) {
+	tests := []struct {
+		name        string
+		lockTTL     string
+		publishTime string
+		queryTime   string
+		wantErr     bool
+	}{
+		{
+			name:        "lock ttl shorter than publish timeout",
+			lockTTL:     "4s",
+			publishTime: "5s",
+			queryTime:   "2s",
+			wantErr:     true,
+		},
+		{
+			name:        "lock ttl equals publish timeout",
+			lockTTL:     "5s",
+			publishTime: "5s",
+			queryTime:   "2s",
+			wantErr:     true,
+		},
+		{
+			name:        "lock ttl shorter than timeout sum",
+			lockTTL:     "6s",
+			publishTime: "5s",
+			queryTime:   "2s",
+			wantErr:     true,
+		},
+		{
+			name:        "lock ttl equals timeout sum",
+			lockTTL:     "7s",
+			publishTime: "5s",
+			queryTime:   "2s",
+			wantErr:     true,
+		},
+		{
+			name:        "lock ttl greater than timeout sum",
+			lockTTL:     "8s",
+			publishTime: "5s",
+			queryTime:   "2s",
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadWithLookup(mapLookup(map[string]string{
+				"OUTBOX_LOCK_TTL":        tt.lockTTL,
+				"OUTBOX_PUBLISH_TIMEOUT": tt.publishTime,
+				"DB_QUERY_TIMEOUT":       tt.queryTime,
+			}))
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+
+				if !strings.Contains(err.Error(), "OUTBOX_LOCK_TTL") {
+					t.Fatalf("expected OUTBOX_LOCK_TTL error, got %v", err)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadWithLookupRejectsInvalidWorkerBackoff(t *testing.T) {
+	_, err := loadWithLookup(mapLookup(map[string]string{
+		"OUTBOX_BASE_BACKOFF": "10s",
+		"OUTBOX_MAX_BACKOFF":  "5s",
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "OUTBOX_MAX_BACKOFF") {
+		t.Fatalf("expected OUTBOX_MAX_BACKOFF error, got %v", err)
 	}
 }
 
