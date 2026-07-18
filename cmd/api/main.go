@@ -11,6 +11,7 @@ import (
 
 	"github.com/sarapersson/game-rewards-service/internal/config"
 	"github.com/sarapersson/game-rewards-service/internal/httpapi"
+	"github.com/sarapersson/game-rewards-service/internal/observability"
 	"github.com/sarapersson/game-rewards-service/internal/postgres"
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
@@ -26,7 +27,7 @@ func run() int {
 		return 1
 	}
 
-	logger := newLogger(cfg)
+	logger := newLogger(cfg).With(slog.String("component", "api"))
 
 	dbPool, err := postgres.OpenPool(context.Background(), cfg.Database)
 	if err != nil {
@@ -40,15 +41,43 @@ func run() int {
 		return 1
 	}
 
+	registry, err := observability.NewRegistry()
+	if err != nil {
+		logger.Error("create metrics registry", slog.Any("error", err))
+		return 1
+	}
+
+	httpMetrics, err := observability.NewHTTPMetrics(registry)
+	if err != nil {
+		logger.Error("register HTTP metrics", slog.Any("error", err))
+		return 1
+	}
+
+	rewardMetrics, err := observability.NewRewardMetrics(registry)
+	if err != nil {
+		logger.Error("register reward metrics", slog.Any("error", err))
+		return 1
+	}
+
 	rewardStore := rewards.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
 	rewardService := rewards.NewService(rewardStore)
 
-	server := httpapi.NewServer(cfg, logger, rewardService, httpapi.ReadinessCheck{
-		Name: "postgres",
-		Check: func(ctx context.Context) error {
-			return postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout)
+	server := httpapi.NewServerWithObservability(
+		cfg,
+		logger,
+		rewardService,
+		httpapi.ServerObservability{
+			MetricsHandler:      observability.Handler(registry),
+			RequestObserver:     httpMetrics,
+			RewardClaimObserver: rewardMetrics,
 		},
-	})
+		httpapi.ReadinessCheck{
+			Name: "postgres",
+			Check: func(ctx context.Context) error {
+				return postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout)
+			},
+		},
+	)
 
 	errCh := make(chan error, 1)
 

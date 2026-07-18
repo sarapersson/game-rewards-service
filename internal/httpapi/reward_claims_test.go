@@ -510,3 +510,56 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 		})
 	}
 }
+
+type recordingRewardObserver struct {
+	called bool
+	result rewards.CreateClaimResult
+	err    error
+}
+
+func (o *recordingRewardObserver) ObserveRewardClaim(result rewards.CreateClaimResult, err error) {
+	o.called = true
+	o.result = result
+	o.err = err
+}
+
+func TestRewardClaimsHandlerObservesServiceOutcome(t *testing.T) {
+	service := &recordingRewardClaimService{
+		result: rewards.CreateClaimResult{
+			StatusCode:   http.StatusCreated,
+			ResponseBody: []byte(`{"claim_id":"claim-1"}`),
+		},
+	}
+	observer := &recordingRewardObserver{}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service, observer).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	if !observer.called || observer.result.StatusCode != http.StatusCreated || observer.err != nil {
+		t.Fatalf("unexpected observation: %#v", observer)
+	}
+}
+
+func TestRewardClaimsHandlerDoesNotObserveTransportValidation(t *testing.T) {
+	observer := &recordingRewardObserver{}
+	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(fakeRewardClaimService{}, observer).ServeHTTP(rec, req)
+
+	if observer.called {
+		t.Fatal("transport validation must not be recorded as a service operation")
+	}
+}

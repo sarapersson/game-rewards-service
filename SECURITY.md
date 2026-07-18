@@ -14,6 +14,11 @@ This project is a personal backend portfolio service under active development. I
 * The local Docker Compose PostgreSQL credentials are development-only
 * The local Docker Compose PostgreSQL port is bound to `127.0.0.1`
 * `/readyz` checks PostgreSQL readiness without exposing raw database errors
+* API and worker expose separate process-local Prometheus registries
+* Metric labels are restricted to bounded routes, methods, status codes, outcomes, event types, failure reasons, and operations
+* Metrics do not include player, campaign, reward, aggregate, event, worker, request, or idempotency identifiers
+* Raw URL paths and raw errors are not used as metric labels
+* Local Compose binds both API and worker admin ports to `127.0.0.1`
 * `POST /v1/reward-claims` requires and validates `Idempotency-Key`
 * Raw idempotency keys are hashed before persistence
 * Idempotency request hashes are stored to detect key reuse with different request payloads
@@ -41,7 +46,7 @@ This project is a personal backend portfolio service under active development. I
 * The security workflow grants CodeQL only the permissions required to publish code scanning results
 * CI runs formatting, module tidiness, vet, tests, race tests, Docker builds, latest-migration rollback verification, and PostgreSQL integration tests
 * CodeQL and Go vulnerability checks run in a separate GitHub Actions security workflow
-* Dependabot is configured for Go modules, GitHub Actions, and Docker
+* Dependabot is configured for Go modules, GitHub Actions, Dockerfiles, and Docker Compose
 
 ## Current scope
 
@@ -55,11 +60,21 @@ Validation errors, malformed JSON, unsupported content types, oversized request 
 
 The outbox worker currently uses a local simulated publisher. It demonstrates worker reliability mechanics, retry behavior, dead-letter handling, lease recovery, and safe PostgreSQL polling without introducing Kafka, Redis, webhooks, or another external broker.
 
-Metrics, authentication, authorization, rate limiting, external integrations, administrative dead-letter replay tooling, and production incident response processes are not implemented yet.
+Prometheus and Grafana deployments, authentication, authorization, rate limiting, external integrations, administrative dead-letter replay tooling, and production incident response processes are not implemented yet.
 
 The API must not be exposed to untrusted or public networks without authentication, authorization, transport security, rate limiting, abuse controls, appropriate network restrictions, and a complete production security review.
 
 More complete security documentation will be added as the service grows, including a threat model for reward claims, idempotency, persistence, and async event delivery.
+
+## Metrics exposure
+
+The API exposes `/metrics` on its API listener and the worker exposes `/metrics` on its separate admin listener. Metrics are process-local; neither process proxies or aggregates the other process's registry.
+
+The local Docker Compose mappings bind both listeners to localhost. A production adaptation should place metric endpoints on private networking or restrict them through ingress, firewall, service mesh, or observability proxy policy. This repository intentionally does not implement a separate metric authentication secret or custom authentication scheme.
+
+Metric labels are designed to remain low-cardinality. Identifiers such as player ID, campaign ID, reward ID, aggregate ID, event ID, worker ID, request ID, and idempotency key are prohibited. Raw request paths, raw errors, user agents, remote addresses, hostnames, process IDs, and attempt numbers are also excluded from labels.
+
+Metrics remain available when PostgreSQL is unavailable. Liveness checks process health only, while readiness checks required dependencies and worker-loop availability.
 
 ## Database and secrets
 
@@ -87,7 +102,7 @@ The worker does not log outbox payloads or raw publisher errors. Logs should rem
 
 Publisher implementations must honor context cancellation and deadlines.
 
-A shutdown cancellation during publishing is not recorded as a failed publish attempt. The event remains `processing` until the lease expires and can then be recovered by another worker.
+A shutdown cancellation during publishing is recorded in metrics with outcome `canceled`, but it does not increment `outbox_events.attempts` or persist a retry or dead-letter transition. The event remains `processing` until the lease expires and can then be recovered by another worker.
 
 Dead-lettered events are retained in PostgreSQL for inspection. This project does not yet include administrative tooling for replaying or deleting dead-lettered events. Operational handling for dead-lettered events will be documented later in the runbook.
 

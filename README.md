@@ -6,12 +6,13 @@ The codebase is developed through small, reviewable changes with a focus on corr
 
 ## Status
 
-Current implementation: Go HTTP API, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, async outbox worker, CI, and baseline security checks.
+Current implementation: Go HTTP API, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, async outbox worker, process-local Prometheus metrics, CI, and baseline security checks.
 
 Implemented so far:
 
 * HTTP server using the Go standard library
-* `/livez` and `/readyz`
+* API `/livez`, `/readyz`, and `/metrics`
+* Worker admin `/livez`, `/readyz`, and `/metrics`
 * `POST /v1/reward-claims`
 * Required `Idempotency-Key` support for `POST /v1/reward-claims`
 * Deterministic idempotency replay for completed reward claim requests
@@ -30,6 +31,8 @@ Implemented so far:
 * Lease ownership checks that prevent stale workers from overwriting reclaimed events
 * Schema-level constraints for duplicate reward prevention and critical invariants
 * Schema-level uniqueness for one outbox event of each type per aggregate
+* Prometheus-style low-cardinality HTTP, reward, idempotency, and outbox worker metrics
+* Separate explicit metric registries for the API and worker processes
 * Structured logging with `log/slog`
 * Request ID middleware
 * Panic recovery
@@ -46,12 +49,11 @@ Implemented so far:
 * Baseline CI checks for formatting, module tidiness, vet, tests, race tests, migrations, integration tests, and Docker builds
 * Separate security workflow for CodeQL code scanning and Go vulnerability checks
 * GitHub Actions concurrency cancellation for superseded workflow runs
-* Dependabot baseline for Go modules, GitHub Actions, and Docker
+* Dependabot baseline for Go modules, GitHub Actions, Dockerfiles, and Docker Compose
 
 Planned work:
 
-* `/metrics`
-* Prometheus-style low-cardinality metrics
+* PostgreSQL-backed outbox backlog and oldest-event observability after query cost and freshness semantics are designed
 * Container scanning and SBOM generation
 * OpenAPI contract
 * Expanded architecture, reliability, observability, threat model, runbook, and tradeoff documentation
@@ -107,12 +109,19 @@ Additional worker processes can be run for more throughput. PostgreSQL coordinat
 
 The API fails fast on startup if PostgreSQL cannot be reached. After startup, `/readyz` reports dependency readiness and returns `503` if PostgreSQL becomes unavailable.
 
-Health checks:
+Health and metrics endpoints:
 
 ```bash
 curl -i http://localhost:8080/livez
 curl -i http://localhost:8080/readyz
+curl -i http://localhost:8080/metrics
+
+curl -i http://localhost:8081/livez
+curl -i http://localhost:8081/readyz
+curl -i http://localhost:8081/metrics
 ```
+
+The API and worker are separate operating-system processes and therefore expose separate process-local registries. API metrics are not forwarded through the worker, and worker metrics are not forwarded through the API.
 
 When PostgreSQL is reachable, `/readyz` includes the dependency check:
 
@@ -272,7 +281,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 Run the worker from the same image:
 
 ```bash
-docker run --rm \
+docker run --rm -p 127.0.0.1:8081:8081 \
   -e DATABASE_URL='postgres://game_rewards:game_rewards_dev_password@host.docker.internal:5432/game_rewards?sslmode=disable' \
   game-rewards-service:local /usr/local/bin/worker
 ```
@@ -285,7 +294,7 @@ When running the Docker image directly, provide a `DATABASE_URL` that the contai
 
 ## Configuration
 
-The service is configured with environment variables.
+The service is configured with environment variables. The `HTTP_*_TIMEOUT` settings apply to both the API server and the worker admin server; only their listen addresses are configured separately.
 
 For local development, `.env.example` documents the default environment variables used by the service. The application reads environment variables from the process; it does not load `.env` files automatically.
 
@@ -301,6 +310,7 @@ For local development, `.env.example` documents the default environment variable
 | `DATABASE_URL`             | `postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable` |
 | `DB_PING_TIMEOUT`          | `2s`                                                                                            |
 | `DB_QUERY_TIMEOUT`         | `2s`                                                                                            |
+| `WORKER_ADMIN_ADDR`        | `:8081`                                                                                         |
 | `WORKER_POLL_INTERVAL`     | `1s`                                                                                            |
 | `OUTBOX_LOCK_TTL`          | `30s`                                                                                           |
 | `OUTBOX_PUBLISH_TIMEOUT`   | `5s`                                                                                            |
@@ -367,6 +377,58 @@ Example unavailable response:
   }
 }
 ```
+
+### `GET /metrics`
+
+Exposes the API process registry in Prometheus text format. The API registry contains Go runtime, process, HTTP request, reward claim, and idempotency metrics.
+
+The worker exposes its own registry on `http://localhost:8081/metrics`. Its admin server also exposes `/livez` and `/readyz`; worker readiness requires both PostgreSQL and the worker loop to be available.
+
+Only `GET` is accepted. Metrics remain available when PostgreSQL is unavailable so failures can still be observed. In a real deployment, metric endpoints should be restricted by private networking, ingress policy, firewall rules, or an observability proxy rather than exposed publicly.
+
+Key application metric families:
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `game_rewards_http_requests_total` | counter | `route`, `method`, `status_code` |
+| `game_rewards_http_request_duration_seconds` | histogram | `route`, `method` |
+| `game_rewards_reward_claim_operations_total` | counter | `outcome` |
+| `game_rewards_idempotency_operations_total` | counter | `outcome` |
+| `game_rewards_outbox_claim_attempts_total` | counter | `outcome` |
+| `game_rewards_outbox_publish_attempts_total` | counter | `event_type`, `outcome` |
+| `game_rewards_outbox_publish_duration_seconds` | histogram | `event_type`, `outcome` |
+| `game_rewards_outbox_events_published_total` | counter | `event_type` |
+| `game_rewards_outbox_retries_scheduled_total` | counter | `event_type`, `failure_reason` |
+| `game_rewards_outbox_events_dead_lettered_total` | counter | `event_type`, `failure_reason` |
+| `game_rewards_outbox_lease_losses_total` | counter | `event_type`, `operation` |
+| `game_rewards_outbox_operation_errors_total` | counter | `operation` |
+
+Metrics never use player, campaign, reward, aggregate, event, worker, request, or idempotency identifiers as labels. Raw URL paths and raw errors are also excluded. Unknown event types and routes are normalized to bounded `unknown` values.
+
+`game_rewards_outbox_publish_attempts_total{outcome="success"}` means the publisher returned successfully. `game_rewards_outbox_events_published_total` increases only after PostgreSQL also accepts the lease-fenced `published` transition. A gap between the two, together with lease-loss or operation-error metrics, distinguishes downstream delivery from durable outbox finalization.
+
+Useful PromQL examples:
+
+```promql
+sum by (route, method) (rate(game_rewards_http_requests_total[5m]))
+```
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, route) (rate(game_rewards_http_request_duration_seconds_bucket[5m]))
+)
+```
+
+```promql
+sum by (event_type, outcome) (rate(game_rewards_outbox_publish_attempts_total[5m]))
+```
+
+```promql
+increase(game_rewards_outbox_lease_losses_total[15m])
+```
+
+Prometheus creates the scrape-level `up` metric; the application does not expose its own `up` gauge. Current queue depth, oldest pending event age, and current dead-letter count are intentionally not approximated with process-local gauges. Those values require a bounded PostgreSQL collector or sampler with explicit query-cost and freshness semantics.
 
 ### `POST /v1/reward-claims`
 
@@ -585,6 +647,10 @@ Database operations use `DB_QUERY_TIMEOUT`, and publisher calls use `OUTBOX_PUBL
 
 Delivery semantics are at-least-once. If publish succeeds but the worker crashes before marking the row as `published`, the event may be published again after lease expiry. Downstream consumers are expected to deduplicate by event ID.
 
+### Worker admin lifecycle
+
+The worker binds its admin listener before starting the processing loop. A listener failure therefore prevents the worker from starting without observability. If either the worker loop or admin server stops unexpectedly, the other component is canceled and the process exits non-zero. During graceful shutdown, readiness is disabled before the worker is canceled and the admin server is drained within `SHUTDOWN_TIMEOUT`.
+
 ## Project structure
 
 ```text
@@ -594,17 +660,26 @@ cmd/api
 cmd/worker
   Outbox worker entrypoint.
 
+internal/adminhttp
+  Worker-only admin server for liveness, readiness, and process-local metrics.
+
 internal/config
   Loads and validates runtime configuration.
 
+internal/health
+  Shared liveness and readiness handler semantics.
+
 internal/httpapi
-  HTTP server, routes, middleware, health checks, reward claim endpoint, and JSON responses.
+  API server, routes, middleware, reward claim endpoint, and JSON responses.
 
 internal/idempotency
   Deterministic hashing helpers for idempotency keys and accepted request payloads.
 
+internal/observability
+  Explicit process-local Prometheus registries and bounded metric collectors.
+
 internal/outbox
-  Async outbox worker, publisher boundary, retry/backoff logic, and PostgreSQL-backed outbox processing.
+  Async outbox worker, observer boundary, publisher boundary, retry/backoff logic, and PostgreSQL-backed outbox processing.
 
 internal/postgres
   PostgreSQL pool setup and health checks.

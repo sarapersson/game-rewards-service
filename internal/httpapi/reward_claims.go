@@ -45,7 +45,7 @@ type createRewardClaimRequest struct {
 	RewardID   string `json:"reward_id"`
 }
 
-func rewardClaimsHandler(service rewardClaimCreator) http.HandlerFunc {
+func rewardClaimsHandler(service rewardClaimCreator, observers ...RewardClaimObserver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
@@ -88,6 +88,11 @@ func rewardClaimsHandler(service rewardClaimCreator) http.HandlerFunc {
 			RewardID:       strings.TrimSpace(req.RewardID),
 			IdempotencyKey: strings.TrimSpace(r.Header.Get(headerIdempotencyKey)),
 		})
+		for _, observer := range observers {
+			if observer != nil {
+				observer.ObserveRewardClaim(result, err)
+			}
+		}
 		if err != nil {
 			writeCreateClaimError(w, err)
 			return

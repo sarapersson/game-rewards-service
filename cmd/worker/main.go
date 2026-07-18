@@ -4,14 +4,22 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
+	"github.com/sarapersson/game-rewards-service/internal/adminhttp"
 	"github.com/sarapersson/game-rewards-service/internal/config"
+	"github.com/sarapersson/game-rewards-service/internal/health"
+	"github.com/sarapersson/game-rewards-service/internal/observability"
 	"github.com/sarapersson/game-rewards-service/internal/outbox"
 	"github.com/sarapersson/game-rewards-service/internal/postgres"
 )
@@ -20,6 +28,11 @@ const (
 	maxWorkerIDLength     = 128
 	workerInstanceIDBytes = 16
 )
+
+type componentResult struct {
+	name string
+	err  error
+}
 
 func main() {
 	os.Exit(run())
@@ -32,7 +45,7 @@ func run() int {
 		return 1
 	}
 
-	logger := newLogger(cfg)
+	logger := newLogger(cfg).With(slog.String("component", "worker"))
 
 	dbPool, err := postgres.OpenPool(context.Background(), cfg.Database)
 	if err != nil {
@@ -41,12 +54,26 @@ func run() int {
 	}
 	defer dbPool.Close()
 
-	if err := postgres.Ping(
-		context.Background(),
-		dbPool,
-		cfg.Database.PingTimeout,
-	); err != nil {
+	if err := postgres.Ping(context.Background(), dbPool, cfg.Database.PingTimeout); err != nil {
 		logger.Error("ping postgres", slog.Any("error", err))
+		return 1
+	}
+
+	registry, err := observability.NewRegistry()
+	if err != nil {
+		logger.Error("create metrics registry", slog.Any("error", err))
+		return 1
+	}
+
+	httpMetrics, err := observability.NewHTTPMetrics(registry)
+	if err != nil {
+		logger.Error("register HTTP metrics", slog.Any("error", err))
+		return 1
+	}
+
+	workerMetrics, err := observability.NewWorkerMetrics(registry)
+	if err != nil {
+		logger.Error("register worker metrics", slog.Any("error", err))
 		return 1
 	}
 
@@ -56,10 +83,7 @@ func run() int {
 		return 1
 	}
 
-	store := outbox.NewPostgresStore(
-		dbPool,
-		cfg.Database.QueryTimeout,
-	)
+	store := outbox.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
 
 	publisher, err := outbox.NewLoggingPublisher(logger)
 	if err != nil {
@@ -81,12 +105,47 @@ func run() int {
 				Base: cfg.Worker.BaseBackoff,
 				Max:  cfg.Worker.MaxBackoff,
 			},
+			Observer: workerMetrics,
 		},
 	)
 	if err != nil {
 		logger.Error("create outbox worker", slog.Any("error", err))
 		return 1
 	}
+
+	var workerReady atomic.Bool
+	adminServer := adminhttp.NewServer(
+		cfg,
+		logger,
+		observability.Handler(registry),
+		httpMetrics,
+		health.Check{
+			Name: "postgres",
+			Check: func(ctx context.Context) error {
+				return postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout)
+			},
+		},
+		health.Check{
+			Name: "worker",
+			Check: func(context.Context) error {
+				if !workerReady.Load() {
+					return errors.New("worker loop is not running")
+				}
+				return nil
+			},
+		},
+	)
+
+	listener, err := net.Listen("tcp", adminServer.Addr)
+	if err != nil {
+		logger.Error(
+			"listen on worker admin address",
+			slog.String("addr", adminServer.Addr),
+			slog.Any("error", err),
+		)
+		return 1
+	}
+	defer listener.Close()
 
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
@@ -95,7 +154,7 @@ func run() int {
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(shutdownCh)
 
-	errCh := make(chan error, 1)
+	results := make(chan componentResult, 2)
 
 	hostname, hostnameErr := os.Hostname()
 	if hostnameErr != nil {
@@ -108,62 +167,158 @@ func run() int {
 		slog.String("hostname", hostname),
 		slog.Int("process_id", os.Getpid()),
 	)
+	logger.Info(
+		"starting worker admin server",
+		slog.String("addr", adminServer.Addr),
+	)
 
 	go func() {
-		errCh <- worker.Run(workerCtx)
+		defer workerReady.Store(false)
+
+		err := worker.Run(workerCtx, func() {
+			workerReady.Store(true)
+		})
+
+		results <- componentResult{
+			name: "worker",
+			err:  err,
+		}
+	}()
+
+	go func() {
+		err := adminServer.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+
+		results <- componentResult{
+			name: "admin_server",
+			err:  err,
+		}
 	}()
 
 	select {
-	case err := <-errCh:
-		if err != nil {
-			logger.Error("outbox worker failed", slog.Any("error", err))
-			return 1
-		}
-
-		logger.Info("outbox worker stopped")
-		return 0
-
 	case sig := <-shutdownCh:
 		logger.Info(
 			"shutdown signal received",
 			slog.String("signal", sig.String()),
 		)
 
-		cancelWorker()
-
-		shutdownCtx, cancelShutdown := context.WithTimeout(
-			context.Background(),
+		if err := stopComponents(
 			cfg.ShutdownTimeout,
-		)
-		defer cancelShutdown()
-
-		select {
-		case err := <-errCh:
-			if err != nil {
-				logger.Error(
-					"outbox worker shutdown failed",
-					slog.Any("error", err),
-				)
-				return 1
-			}
-
-			logger.Info("shutdown complete")
-			return 0
-
-		case <-shutdownCtx.Done():
+			adminServer,
+			&workerReady,
+			cancelWorker,
+			results,
+			2,
+		); err != nil {
 			logger.Error(
-				"outbox worker shutdown timed out",
-				slog.String("error", shutdownCtx.Err().Error()),
+				"worker shutdown failed",
+				slog.Any("error", err),
 			)
 			return 1
 		}
+
+		logger.Info("shutdown complete")
+		return 0
+
+	case result := <-results:
+		workerReady.Store(false)
+
+		componentErr := result.err
+		if componentErr == nil {
+			componentErr = fmt.Errorf(
+				"%s stopped unexpectedly",
+				result.name,
+			)
+		}
+
+		logger.Error(
+			"worker component failed",
+			slog.String("component_name", result.name),
+			slog.Any("error", componentErr),
+		)
+
+		if err := stopComponents(
+			cfg.ShutdownTimeout,
+			adminServer,
+			&workerReady,
+			cancelWorker,
+			results,
+			1,
+		); err != nil {
+			logger.Error(
+				"worker component cleanup failed",
+				slog.Any("error", err),
+			)
+		}
+
+		return 1
 	}
+}
+
+func stopComponents(
+	shutdownTimeout time.Duration,
+	adminServer *http.Server,
+	workerReady *atomic.Bool,
+	cancelWorker context.CancelFunc,
+	results <-chan componentResult,
+	remaining int,
+) error {
+	workerReady.Store(false)
+	cancelWorker()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		shutdownTimeout,
+	)
+	defer cancel()
+
+	shutdownErr := adminServer.Shutdown(ctx)
+	var componentErr error
+
+	for remaining > 0 {
+		select {
+		case result := <-results:
+			remaining--
+
+			if result.err != nil {
+				componentErr = errors.Join(
+					componentErr,
+					fmt.Errorf(
+						"%s stopped: %w",
+						result.name,
+						result.err,
+					),
+				)
+			}
+
+		case <-ctx.Done():
+			_ = adminServer.Close()
+			return fmt.Errorf(
+				"shutdown timed out: %w",
+				ctx.Err(),
+			)
+		}
+	}
+
+	if shutdownErr != nil {
+		shutdownErr = fmt.Errorf(
+			"shutdown worker admin server: %w",
+			shutdownErr,
+		)
+	}
+
+	return errors.Join(shutdownErr, componentErr)
 }
 
 func newWorkerID(serviceName string) (string, error) {
 	instanceID := make([]byte, workerInstanceIDBytes)
 	if _, err := rand.Read(instanceID); err != nil {
-		return "", fmt.Errorf("generate worker instance id: %w", err)
+		return "", fmt.Errorf(
+			"generate worker instance id: %w",
+			err,
+		)
 	}
 
 	workerID := fmt.Sprintf(

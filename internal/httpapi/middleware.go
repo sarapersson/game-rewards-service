@@ -24,6 +24,10 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.wroteHeader {
 		return
@@ -42,9 +46,9 @@ func (r *statusRecorder) Write(body []byte) (int, error) {
 	return r.ResponseWriter.Write(body)
 }
 
-func withMiddleware(handler http.Handler, logger *slog.Logger) http.Handler {
+func withMiddleware(handler http.Handler, logger *slog.Logger, observers ...RequestObserver) http.Handler {
 	return requestID(
-		requestLogger(logger)(
+		requestLogger(logger, observers...)(
 			recoverer(logger)(
 				secureHeaders(handler),
 			),
@@ -97,7 +101,7 @@ func secureHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+func requestLogger(logger *slog.Logger, observers ...RequestObserver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			started := time.Now()
@@ -108,14 +112,28 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rec, r)
 
-			logger.InfoContext(
+			duration := time.Since(started)
+			route := routeName(r)
+			for _, observer := range observers {
+				if observer != nil {
+					observer.ObserveRequest(route, r.Method, rec.status, duration)
+				}
+			}
+
+			level := slog.LevelInfo
+			if rec.status < http.StatusBadRequest && isAdminRoute(route) {
+				level = slog.LevelDebug
+			}
+
+			logger.Log(
 				r.Context(),
+				level,
 				"http request",
 				slog.String("request_id", requestIDFromRequest(r)),
 				slog.String("method", r.Method),
-				slog.String("route", routeName(r)),
+				slog.String("route", route),
 				slog.Int("status", rec.status),
-				slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+				slog.Int64("duration_ms", duration.Milliseconds()),
 				slog.String("remote_addr", clientIP(r)),
 				slog.String("user_agent", truncateString(r.UserAgent(), maxUserAgentLogLen)),
 			)
@@ -163,6 +181,8 @@ func routeName(r *http.Request) string {
 		return routeLivez
 	case routeReadyz:
 		return routeReadyz
+	case routeMetrics:
+		return routeMetrics
 	case routeRewardClaims:
 		return routeRewardClaims
 	default:
@@ -185,4 +205,13 @@ func truncateString(value string, maxLen int) string {
 	}
 
 	return value[:maxLen]
+}
+
+func isAdminRoute(route string) bool {
+	switch route {
+	case routeLivez, routeReadyz, routeMetrics:
+		return true
+	default:
+		return false
+	}
 }

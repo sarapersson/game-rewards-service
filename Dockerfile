@@ -37,6 +37,6 @@ COPY --from=build /out/worker /usr/local/bin/worker
 
 USER app
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 CMD ["/usr/local/bin/api"]

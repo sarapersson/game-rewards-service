@@ -40,10 +40,13 @@ services:
     environment:
       APP_ENV: local
       SERVICE_NAME: game-rewards-service
+      WORKER_ADMIN_ADDR: :8081
       DATABASE_URL: postgres://game_rewards:game_rewards_dev_password@postgres:5432/game_rewards?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8081"
     stop_grace_period: 15s
 
 volumes:

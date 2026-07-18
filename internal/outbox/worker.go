@@ -28,6 +28,7 @@ type Worker struct {
 	maxAttempts    int
 	backoff        BackoffPolicy
 	now            func() time.Time
+	observer       Observer
 }
 
 type WorkerConfig struct {
@@ -37,6 +38,7 @@ type WorkerConfig struct {
 	PublishTimeout time.Duration
 	MaxAttempts    int
 	Backoff        BackoffPolicy
+	Observer       Observer
 }
 
 func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg WorkerConfig) (*Worker, error) {
@@ -84,6 +86,11 @@ func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg Worker
 		return nil, fmt.Errorf("invalid backoff policy: %w", err)
 	}
 
+	observer := cfg.Observer
+	if observer == nil {
+		observer = noopObserver{}
+	}
+
 	return &Worker{
 		store:          store,
 		publisher:      publisher,
@@ -95,10 +102,19 @@ func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg Worker
 		maxAttempts:    cfg.MaxAttempts,
 		backoff:        cfg.Backoff,
 		now:            time.Now,
+		observer:       observer,
 	}, nil
 }
 
-func (w *Worker) Run(ctx context.Context) error {
+// Run processes outbox events until ctx is canceled.
+//
+// onStarted is called once, after the polling loop has been initialized and
+// immediately before the worker begins waiting for work. It may be nil.
+func (w *Worker) Run(ctx context.Context, onStarted func()) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	w.logger.InfoContext(
 		ctx,
 		"outbox_worker_started",
@@ -113,6 +129,14 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	timer := time.NewTimer(0)
 	defer timer.Stop()
+
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	if onStarted != nil {
+		onStarted()
+	}
 
 	for {
 		select {
@@ -147,12 +171,17 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	event, claimed, err := w.store.ClaimNext(ctx, w.workerID, w.lockTTL)
 	if err != nil {
+		w.observer.ObserveClaim(ClaimOutcomeError)
+		w.observer.ObserveOperationError(OperationClaim)
 		return 0, err
 	}
 
 	if !claimed {
+		w.observer.ObserveClaim(ClaimOutcomeEmpty)
 		return 0, nil
 	}
+
+	w.observer.ObserveClaim(ClaimOutcomeClaimed)
 
 	w.logger.InfoContext(
 		ctx,
@@ -190,11 +219,16 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 
 	publishErr := w.publisher.Publish(publishCtx, event)
 	duration := w.now().Sub(started)
+	publishOutcome := classifyPublishOutcome(publishCtx, publishErr)
+	w.observer.ObservePublish(event.EventType, publishOutcome, duration)
 
 	if publishErr == nil {
 		if err := w.store.MarkPublished(ctx, w.workerID, event.ID); err != nil {
+			w.observeTransitionError(event.EventType, OperationMarkPublished, err)
 			return fmt.Errorf("mark published event %q: %w", event.ID, err)
 		}
+
+		w.observer.ObservePublished(event.EventType)
 
 		w.logger.InfoContext(
 			ctx,
@@ -221,8 +255,11 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 
 	if failedAttempts >= w.maxAttempts {
 		if err := w.store.MarkDeadLetter(ctx, w.workerID, event.ID, failureReason); err != nil {
+			w.observeTransitionError(event.EventType, OperationMarkDeadLetter, err)
 			return fmt.Errorf("mark event %q dead letter: %w", event.ID, err)
 		}
+
+		w.observer.ObserveDeadLetter(event.EventType, failureReason)
 
 		w.logger.WarnContext(
 			ctx,
@@ -240,6 +277,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 
 	retryDelay, err := w.backoff.Duration(event.Attempts)
 	if err != nil {
+		w.observer.ObserveOperationError(OperationCalculateBackoff)
 		return fmt.Errorf("calculate retry delay for event %q: %w", event.ID, err)
 	}
 
@@ -251,8 +289,11 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 		failureReason,
 	)
 	if err != nil {
+		w.observeTransitionError(event.EventType, OperationScheduleRetry, err)
 		return fmt.Errorf("schedule retry for event %q: %w", event.ID, err)
 	}
+
+	w.observer.ObserveRetry(event.EventType, failureReason)
 
 	w.logger.WarnContext(
 		ctx,
@@ -282,5 +323,27 @@ func classifyPublishFailure(publishCtx context.Context, err error) string {
 		return publishFailureCanceled
 	default:
 		return publishFailureFailed
+	}
+}
+
+func classifyPublishOutcome(publishCtx context.Context, err error) PublishOutcome {
+	if err == nil {
+		return PublishOutcomeSuccess
+	}
+
+	switch classifyPublishFailure(publishCtx, err) {
+	case publishFailureTimeout:
+		return PublishOutcomeTimeout
+	case publishFailureCanceled:
+		return PublishOutcomeCanceled
+	default:
+		return PublishOutcomeFailed
+	}
+}
+
+func (w *Worker) observeTransitionError(eventType string, operation Operation, err error) {
+	w.observer.ObserveOperationError(operation)
+	if errors.Is(err, ErrLeaseLost) {
+		w.observer.ObserveLeaseLoss(eventType, operation)
 	}
 }
