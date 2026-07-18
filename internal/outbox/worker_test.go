@@ -396,7 +396,8 @@ func TestWorkerRunOnceDoesNotRetryOnShutdownCancellation(t *testing.T) {
 		started: make(chan struct{}),
 	}
 
-	worker := newTestWorker(t, store, publisher)
+	observer := &recordingWorkerObserver{}
+	worker := newTestWorkerWithObserver(t, store, publisher, observer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan runOnceResult, 1)
@@ -440,6 +441,13 @@ func TestWorkerRunOnceDoesNotRetryOnShutdownCancellation(t *testing.T) {
 
 	if store.publishedEventID != "" {
 		t.Fatalf("expected no published marker on shutdown, got %q", store.publishedEventID)
+	}
+
+	if len(observer.publishes) != 1 || observer.publishes[0].outcome != PublishOutcomeCanceled {
+		t.Fatalf("publishes = %#v, want one canceled attempt", observer.publishes)
+	}
+	if len(observer.retries) != 0 || len(observer.deadLetters) != 0 || len(observer.published) != 0 {
+		t.Fatalf("shutdown cancellation recorded a transition: retries=%#v dead_letters=%#v published=%#v", observer.retries, observer.deadLetters, observer.published)
 	}
 }
 
@@ -509,6 +517,66 @@ func TestWorkerDoesNotExposeRawPublisherError(t *testing.T) {
 	}
 }
 
+func TestWorkerRunSignalsStartedWhenPollingLoopIsInitialized(t *testing.T) {
+	worker := newTestWorker(t, &fakeStore{}, &fakePublisher{})
+	worker.pollInterval = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{}, 1)
+	runResult := make(chan error, 1)
+	var startedCalls atomic.Int32
+
+	go func() {
+		runResult <- worker.Run(ctx, func() {
+			startedCalls.Add(1)
+			started <- struct{}{}
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not signal that the polling loop was initialized")
+	}
+
+	cancel()
+
+	select {
+	case err := <-runResult:
+		if err != nil {
+			t.Fatalf("Worker.Run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after cancellation")
+	}
+
+	if got := startedCalls.Load(); got != 1 {
+		t.Fatalf("onStarted calls = %d, want 1", got)
+	}
+}
+
+func TestWorkerRunDoesNotSignalStartedWhenContextIsAlreadyCanceled(t *testing.T) {
+	worker := newTestWorker(t, &fakeStore{}, &fakePublisher{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var started atomic.Bool
+
+	err := worker.Run(ctx, func() {
+		started.Store(true)
+	})
+	if err != nil {
+		t.Fatalf("Worker.Run returned error: %v", err)
+	}
+
+	if started.Load() {
+		t.Fatal("worker signaled started for an already canceled context")
+	}
+}
+
 func TestWorkerRunWaitsBetweenIdleAndFailedIterations(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -532,7 +600,7 @@ func TestWorkerRunWaitsBetweenIdleAndFailedIterations(t *testing.T) {
 			runResult := make(chan error, 1)
 
 			go func() {
-				runResult <- worker.Run(ctx)
+				runResult <- worker.Run(ctx, nil)
 			}()
 
 			select {
@@ -801,7 +869,11 @@ func (s *fakeStore) ClaimNext(
 	return event, true, nil
 }
 
-func (s *fakeStore) MarkPublished(_ context.Context, _ string, eventID string) error {
+func (s *fakeStore) MarkPublished(
+	_ context.Context,
+	_ string,
+	eventID string,
+) error {
 	s.publishedEventID = eventID
 
 	if s.markPublishedErr != nil {
@@ -850,7 +922,10 @@ type fakePublisher struct {
 	published []Event
 }
 
-func (p *fakePublisher) Publish(_ context.Context, event Event) error {
+func (p *fakePublisher) Publish(
+	_ context.Context,
+	event Event,
+) error {
 	if p.err != nil {
 		return p.err
 	}
@@ -865,7 +940,10 @@ type blockingPublisher struct {
 	startedOnce sync.Once
 }
 
-func (p *blockingPublisher) Publish(ctx context.Context, _ Event) error {
+func (p *blockingPublisher) Publish(
+	ctx context.Context,
+	_ Event,
+) error {
 	if p.started != nil {
 		p.startedOnce.Do(func() {
 			close(p.started)
@@ -875,4 +953,332 @@ func (p *blockingPublisher) Publish(ctx context.Context, _ Event) error {
 	<-ctx.Done()
 
 	return ctx.Err()
+}
+
+func TestWorkerObserverRecordsSuccessfulPublishAndFinalization(t *testing.T) {
+	store := &fakeStore{
+		claimed: []Event{
+			testEvent("event-1", 0),
+		},
+	}
+	observer := &recordingWorkerObserver{}
+	worker := newTestWorkerWithObserver(
+		t,
+		store,
+		&fakePublisher{},
+		observer,
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce error: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d, want 1", processed)
+	}
+	if len(observer.claims) != 1 ||
+		observer.claims[0] != ClaimOutcomeClaimed {
+		t.Fatalf("claims = %#v", observer.claims)
+	}
+	if len(observer.publishes) != 1 ||
+		observer.publishes[0].outcome != PublishOutcomeSuccess {
+		t.Fatalf("publishes = %#v", observer.publishes)
+	}
+	if len(observer.published) != 1 ||
+		observer.published[0] != "RewardClaimed" {
+		t.Fatalf("published = %#v", observer.published)
+	}
+}
+
+func TestWorkerObserverRecordsLeaseLossSeparately(t *testing.T) {
+	store := &fakeStore{
+		claimed: []Event{
+			testEvent("event-1", 0),
+		},
+		markPublishedErr: ErrLeaseLost,
+	}
+	observer := &recordingWorkerObserver{}
+	worker := newTestWorkerWithObserver(
+		t,
+		store,
+		&fakePublisher{},
+		observer,
+	)
+
+	_, err := worker.RunOnce(context.Background())
+	if !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("RunOnce error = %v, want ErrLeaseLost", err)
+	}
+	if len(observer.leaseLosses) != 1 ||
+		observer.leaseLosses[0] != OperationMarkPublished {
+		t.Fatalf("lease losses = %#v", observer.leaseLosses)
+	}
+	if len(observer.operationErrors) != 1 ||
+		observer.operationErrors[0] != OperationMarkPublished {
+		t.Fatalf("operation errors = %#v", observer.operationErrors)
+	}
+	if len(observer.published) != 0 {
+		t.Fatalf(
+			"published = %#v, want none",
+			observer.published,
+		)
+	}
+}
+
+func newTestWorkerWithObserver(
+	t *testing.T,
+	store Store,
+	publisher Publisher,
+	observer Observer,
+) *Worker {
+	t.Helper()
+
+	worker, err := NewWorker(
+		store,
+		publisher,
+		newDiscardLogger(),
+		WorkerConfig{
+			WorkerID:       "worker-test",
+			PollInterval:   time.Millisecond,
+			LockTTL:        30 * time.Second,
+			PublishTimeout: 5 * time.Second,
+			MaxAttempts:    5,
+			Backoff: BackoffPolicy{
+				Base: time.Second,
+				Max:  time.Minute,
+			},
+			Observer: observer,
+		},
+	)
+	if err != nil {
+		t.Fatalf("create worker: %v", err)
+	}
+
+	return worker
+}
+
+type recordedPublish struct {
+	eventType string
+	outcome   PublishOutcome
+	duration  time.Duration
+}
+
+type recordingWorkerObserver struct {
+	claims          []ClaimOutcome
+	publishes       []recordedPublish
+	published       []string
+	retries         []string
+	deadLetters     []string
+	leaseLosses     []Operation
+	operationErrors []Operation
+}
+
+func (o *recordingWorkerObserver) ObserveClaim(
+	outcome ClaimOutcome,
+) {
+	o.claims = append(o.claims, outcome)
+}
+
+func (o *recordingWorkerObserver) ObservePublish(
+	eventType string,
+	outcome PublishOutcome,
+	duration time.Duration,
+) {
+	o.publishes = append(
+		o.publishes,
+		recordedPublish{
+			eventType: eventType,
+			outcome:   outcome,
+			duration:  duration,
+		},
+	)
+}
+
+func (o *recordingWorkerObserver) ObservePublished(
+	eventType string,
+) {
+	o.published = append(o.published, eventType)
+}
+
+func (o *recordingWorkerObserver) ObserveRetry(
+	eventType string,
+	failureReason string,
+) {
+	o.retries = append(
+		o.retries,
+		eventType+":"+failureReason,
+	)
+}
+
+func (o *recordingWorkerObserver) ObserveDeadLetter(
+	eventType string,
+	failureReason string,
+) {
+	o.deadLetters = append(
+		o.deadLetters,
+		eventType+":"+failureReason,
+	)
+}
+
+func (o *recordingWorkerObserver) ObserveLeaseLoss(
+	_ string,
+	operation Operation,
+) {
+	o.leaseLosses = append(o.leaseLosses, operation)
+}
+
+func (o *recordingWorkerObserver) ObserveOperationError(
+	operation Operation,
+) {
+	o.operationErrors = append(
+		o.operationErrors,
+		operation,
+	)
+}
+
+func TestWorkerObserverRecordsIdleAndClaimError(t *testing.T) {
+	t.Run("idle", func(t *testing.T) {
+		observer := &recordingWorkerObserver{}
+		worker := newTestWorkerWithObserver(
+			t,
+			&fakeStore{},
+			&fakePublisher{},
+			observer,
+		)
+
+		processed, err := worker.RunOnce(context.Background())
+		if err != nil || processed != 0 {
+			t.Fatalf(
+				"RunOnce = (%d, %v), want (0, nil)",
+				processed,
+				err,
+			)
+		}
+		if len(observer.claims) != 1 ||
+			observer.claims[0] != ClaimOutcomeEmpty {
+			t.Fatalf(
+				"claims = %#v, want empty",
+				observer.claims,
+			)
+		}
+	})
+
+	t.Run("claim error", func(t *testing.T) {
+		claimErr := errors.New("claim failed")
+		observer := &recordingWorkerObserver{}
+		worker := newTestWorkerWithObserver(
+			t,
+			&fakeStore{claimErr: claimErr},
+			&fakePublisher{},
+			observer,
+		)
+
+		_, err := worker.RunOnce(context.Background())
+		if !errors.Is(err, claimErr) {
+			t.Fatalf(
+				"RunOnce error = %v, want claim error",
+				err,
+			)
+		}
+		if len(observer.claims) != 1 ||
+			observer.claims[0] != ClaimOutcomeError {
+			t.Fatalf(
+				"claims = %#v, want error",
+				observer.claims,
+			)
+		}
+		if len(observer.operationErrors) != 1 ||
+			observer.operationErrors[0] != OperationClaim {
+			t.Fatalf(
+				"operation errors = %#v, want claim",
+				observer.operationErrors,
+			)
+		}
+	})
+}
+
+func TestWorkerObserverRecordsRetryAndDeadLetterAfterSuccessfulTransitions(
+	t *testing.T,
+) {
+	t.Run("retry", func(t *testing.T) {
+		store := &fakeStore{
+			claimed: []Event{
+				testEvent("event-1", 0),
+			},
+			retryAvailableAt: time.Date(
+				2026,
+				time.July,
+				16,
+				12,
+				0,
+				0,
+				0,
+				time.UTC,
+			),
+		}
+		observer := &recordingWorkerObserver{}
+		worker := newTestWorkerWithObserver(
+			t,
+			store,
+			&fakePublisher{
+				err: errors.New("temporary"),
+			},
+			observer,
+		)
+
+		processed, err := worker.RunOnce(context.Background())
+		if err != nil || processed != 1 {
+			t.Fatalf(
+				"RunOnce = (%d, %v), want (1, nil)",
+				processed,
+				err,
+			)
+		}
+		if len(observer.publishes) != 1 ||
+			observer.publishes[0].outcome != PublishOutcomeFailed {
+			t.Fatalf(
+				"publishes = %#v, want failed",
+				observer.publishes,
+			)
+		}
+		if len(observer.retries) != 1 ||
+			observer.retries[0] !=
+				"RewardClaimed:"+publishFailureFailed {
+			t.Fatalf("retries = %#v", observer.retries)
+		}
+	})
+
+	t.Run("dead letter", func(t *testing.T) {
+		store := &fakeStore{
+			claimed: []Event{
+				testEvent("event-1", 4),
+			},
+		}
+		observer := &recordingWorkerObserver{}
+		worker := newTestWorkerWithObserver(
+			t,
+			store,
+			&fakePublisher{
+				err: errors.New("permanent"),
+			},
+			observer,
+		)
+
+		processed, err := worker.RunOnce(context.Background())
+		if err != nil || processed != 1 {
+			t.Fatalf(
+				"RunOnce = (%d, %v), want (1, nil)",
+				processed,
+				err,
+			)
+		}
+		if len(observer.deadLetters) != 1 ||
+			observer.deadLetters[0] !=
+				"RewardClaimed:"+publishFailureFailed {
+			t.Fatalf(
+				"dead letters = %#v",
+				observer.deadLetters,
+			)
+		}
+	})
 }

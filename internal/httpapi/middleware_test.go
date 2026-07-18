@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMiddlewareSetsGeneratedRequestID(t *testing.T) {
@@ -151,5 +152,58 @@ func TestRequestLoggerDoesNotLogRawRequestPath(t *testing.T) {
 
 	if !strings.Contains(logOutput, `"route":"unknown"`) {
 		t.Fatalf("request log = %q, want unknown route", logOutput)
+	}
+}
+
+type recordingRequestObserver struct {
+	route    string
+	method   string
+	status   int
+	duration time.Duration
+}
+
+func (o *recordingRequestObserver) ObserveRequest(route, method string, status int, duration time.Duration) {
+	o.route = route
+	o.method = method
+	o.status = status
+	o.duration = duration
+}
+
+func TestMiddlewareObservesBoundedRouteAndStatus(t *testing.T) {
+	observer := &recordingRequestObserver{}
+	handler := withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}), testLogger(), observer)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/private/raw/path", nil)
+	handler.ServeHTTP(recorder, request)
+
+	if observer.route != "unknown" {
+		t.Fatalf("route = %q, want unknown", observer.route)
+	}
+	if observer.method != http.MethodGet || observer.status != http.StatusTeapot {
+		t.Fatalf("unexpected observation: %#v", observer)
+	}
+	if observer.duration < 0 {
+		t.Fatalf("duration = %s", observer.duration)
+	}
+}
+
+func TestMiddlewareObservesRecoveredPanicAsInternalError(t *testing.T) {
+	observer := &recordingRequestObserver{}
+	handler := withMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}), testLogger(), observer)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if observer.route != "unknown" || observer.status != http.StatusInternalServerError {
+		t.Fatalf("unexpected observation: %#v", observer)
 	}
 }

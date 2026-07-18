@@ -23,6 +23,7 @@ const (
 	defaultDatabaseURL           = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 	defaultDBPingTimeout         = 2 * time.Second
 	defaultDBQueryTimeout        = 2 * time.Second
+	defaultWorkerAdminAddr       = ":8081"
 	defaultWorkerPollInterval    = 1 * time.Second
 	defaultOutboxLockTTL         = 30 * time.Second
 	defaultOutboxPublishTimeout  = 5 * time.Second
@@ -60,6 +61,7 @@ type DatabaseConfig struct {
 
 // WorkerConfig contains outbox worker settings.
 type WorkerConfig struct {
+	AdminAddr      string
 	PollInterval   time.Duration
 	OutboxLockTTL  time.Duration
 	PublishTimeout time.Duration
@@ -91,6 +93,7 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 			URL: getString(lookup, "DATABASE_URL", defaultDatabaseURL),
 		},
 		Worker: WorkerConfig{
+			AdminAddr:   getString(lookup, "WORKER_ADMIN_ADDR", defaultWorkerAdminAddr),
 			MaxAttempts: defaultOutboxMaxAttempts,
 		},
 		ShutdownTimeout: defaultShutdownTimeout,
@@ -258,6 +261,10 @@ func validate(cfg Config) error {
 
 	if strings.TrimSpace(cfg.Database.URL) == "" {
 		return fmt.Errorf("DATABASE_URL must not be empty")
+	}
+
+	if strings.TrimSpace(cfg.Worker.AdminAddr) == "" {
+		return fmt.Errorf("WORKER_ADMIN_ADDR must not be empty")
 	}
 
 	if cfg.Worker.OutboxLockTTL <= cfg.Worker.PublishTimeout {

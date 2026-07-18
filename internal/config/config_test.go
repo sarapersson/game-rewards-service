@@ -53,6 +53,10 @@ func TestLoadWithLookupUsesDefaults(t *testing.T) {
 		t.Fatalf("expected database query timeout 2s, got %s", cfg.Database.QueryTimeout)
 	}
 
+	if cfg.Worker.AdminAddr != ":8081" {
+		t.Fatalf("expected worker admin addr :8081, got %q", cfg.Worker.AdminAddr)
+	}
+
 	if cfg.Worker.PollInterval != time.Second {
 		t.Fatalf("expected worker poll interval 1s, got %s", cfg.Worker.PollInterval)
 	}
@@ -98,6 +102,7 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		"DATABASE_URL":             "postgres://custom:secret@localhost:5433/custom?sslmode=disable",
 		"DB_PING_TIMEOUT":          "750ms",
 		"DB_QUERY_TIMEOUT":         "900ms",
+		"WORKER_ADMIN_ADDR":        ":9191",
 		"WORKER_POLL_INTERVAL":     "250ms",
 		"OUTBOX_LOCK_TTL":          "45s",
 		"OUTBOX_PUBLISH_TIMEOUT":   "10s",
@@ -151,6 +156,10 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("expected database query timeout 900ms, got %s", cfg.Database.QueryTimeout)
 	}
 
+	if cfg.Worker.AdminAddr != ":9191" {
+		t.Fatalf("expected worker admin addr :9191, got %q", cfg.Worker.AdminAddr)
+	}
+
 	if cfg.Worker.PollInterval != 250*time.Millisecond {
 		t.Fatalf("expected worker poll interval 250ms, got %s", cfg.Worker.PollInterval)
 	}
@@ -186,11 +195,12 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 
 func TestLoadWithLookupFallsBackForBlankValues(t *testing.T) {
 	cfg, err := loadWithLookup(mapLookup(map[string]string{
-		"APP_ENV":      "   ",
-		"SERVICE_NAME": "",
-		"HTTP_ADDR":    "\t",
-		"DATABASE_URL": "",
-		"LOG_LEVEL":    "",
+		"APP_ENV":           "   ",
+		"SERVICE_NAME":      "",
+		"HTTP_ADDR":         "\t",
+		"WORKER_ADMIN_ADDR": " ",
+		"DATABASE_URL":      "",
+		"LOG_LEVEL":         "",
 	}))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -206,6 +216,10 @@ func TestLoadWithLookupFallsBackForBlankValues(t *testing.T) {
 
 	if cfg.HTTP.Addr != ":8080" {
 		t.Fatalf("expected blank HTTP_ADDR to fall back to default, got %q", cfg.HTTP.Addr)
+	}
+
+	if cfg.Worker.AdminAddr != ":8081" {
+		t.Fatalf("expected blank WORKER_ADMIN_ADDR to fall back to default, got %q", cfg.Worker.AdminAddr)
 	}
 
 	if cfg.Database.URL != "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable" {

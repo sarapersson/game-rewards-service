@@ -69,3 +69,34 @@ func TestNewServerWiresRoutesAndMiddleware(t *testing.T) {
 		t.Fatal("expected request ID header from middleware")
 	}
 }
+
+func TestNewServerWithObservabilityWiresMetricsRoute(t *testing.T) {
+	observer := &recordingRequestObserver{}
+	server := NewServerWithObservability(
+		config.Config{HTTP: config.HTTPConfig{Addr: ":0"}},
+		testLogger(),
+		nil,
+		ServerObservability{
+			MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("metric 1\n"))
+			}),
+			RequestObserver: observer,
+		},
+	)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, routeMetrics, nil)
+	server.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	if recorder.Body.String() != "metric 1\n" {
+		t.Fatalf("body = %q, want metric output", recorder.Body.String())
+	}
+	if observer.route != routeMetrics || observer.method != http.MethodGet || observer.status != http.StatusOK {
+		t.Fatalf("unexpected metrics observation: %#v", observer)
+	}
+}
