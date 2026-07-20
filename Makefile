@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-logs migrate-up migrate-down migrate-status db-check
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-logs migrate-up migrate-down migrate-status db-check db-check-full
 
 BIN_DIR := bin
 API_BIN := $(BIN_DIR)/api
@@ -104,4 +104,16 @@ migrate-status: ## Show database migration version
 db-check: ## Verify the latest migration can apply, roll back, and re-apply
 	$(MAKE) migrate-up
 	$(MAKE) migrate-down
+	$(MAKE) migrate-up
+
+db-check-full: ## Destructively verify the complete migration chain against a disposable database
+	@if [ "$(ALLOW_DESTRUCTIVE_DB_CHECK)" != "1" ]; then \
+		echo "Refusing destructive full migration check. Set ALLOW_DESTRUCTIVE_DB_CHECK=1 only for a disposable database."; \
+		exit 1; \
+	fi
+	$(MAKE) migrate-up
+	@go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION) \
+		-path $(MIGRATIONS_DIR) \
+		-database "$(DATABASE_URL)" \
+		down -all
 	$(MAKE) migrate-up

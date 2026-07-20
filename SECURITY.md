@@ -6,28 +6,33 @@ This project is a personal backend portfolio service under active development. I
 
 * Local `.env` files are ignored by Git
 * HTTP server timeouts are configured explicitly
-* Database operations and worker shutdown use explicit timeouts
+* Database operations, publisher calls, and worker shutdown use explicit timeouts
 * Request IDs are bounded in length and restricted to a safe character set
-* Application logging is designed to avoid request bodies, secrets, full idempotency keys, authorization headers, and sensitive runtime configuration
-* Worker logging is designed to avoid outbox payloads, player identifiers, raw metadata, idempotency keys, request bodies, and raw publisher errors
+* Application logging is designed to avoid request bodies, secrets, full idempotency keys, authorization headers, connection strings, credentials, and sensitive runtime configuration
+* Worker logging avoids outbox payloads, player identifiers, raw publisher errors, request bodies, idempotency keys, and unnecessary sensitive metadata
 * PostgreSQL is configured through `DATABASE_URL`
 * The local Docker Compose PostgreSQL credentials are development-only
 * The local Docker Compose PostgreSQL port is bound to `127.0.0.1`
 * `/readyz` checks PostgreSQL readiness without exposing raw database errors
+* Known PostgreSQL dependency-availability failures are classified separately from schema, invariant, authentication, protocol, and unexpected internal failures
+* Raw PostgreSQL, network, connection-string, and credential details are not exposed in API error responses
 * API and worker expose separate process-local Prometheus registries
 * Metric labels are restricted to bounded routes, methods, status codes, outcomes, event types, failure reasons, and operations
 * Metrics do not include player, campaign, reward, aggregate, event, worker, request, or idempotency identifiers
 * Raw URL paths and raw errors are not used as metric labels
 * Local Compose binds both API and worker admin ports to `127.0.0.1`
-* `POST /v1/reward-claims` requires and validates `Idempotency-Key`
+* `POST /v1/reward-claims` requires exactly one non-empty `Idempotency-Key` header value
+* Requests with multiple `Idempotency-Key` header values are rejected as invalid and ambiguous
 * Raw idempotency keys are hashed before persistence
 * Idempotency request hashes are stored to detect key reuse with different request payloads
 * Completed idempotent responses are stored for deterministic retry replay
 * Reward claim request bodies are size-limited
+* Unknown JSON fields and multiple JSON values in one request body are rejected
 * Duplicate reward claims for the same player, campaign, and reward are prevented by a PostgreSQL unique constraint
 * SQL migrations define schema-level constraints for critical invariants
 * Successful reward claim creation writes a `RewardClaimed` event to the transactional outbox in the same database transaction as the claim and idempotency response
 * Outbox events are protected by a PostgreSQL uniqueness constraint for one event of each type per aggregate
+* Concurrent reward-claim integration tests verify final claim, idempotency, and outbox state under duplicate and same-key races
 * The async outbox worker claims due events with PostgreSQL `FOR UPDATE SKIP LOCKED`
 * Each worker claims one event at a time
 * Outbox processing uses processing leases with `locked_by` and `locked_until` so events can be reclaimed after worker crashes
@@ -39,44 +44,56 @@ This project is a personal backend portfolio service under active development. I
 * Outbox events are moved to `dead_letter` after the configured maximum number of failed attempts
 * Outbox delivery is at-least-once; downstream consumers are expected to deduplicate by event ID
 * The current local publisher simulates publishing and does not call external brokers or services
+* Idempotency expiry metadata is not interpreted as request-path cleanup behavior
+* The service does not run automatic idempotency or outbox retention cleanup jobs
+* Routine outbox retention must never remove `pending` or `processing` events
 * The Docker container runs as a non-root user
 * Docker images use versioned base images and avoid `latest` tags
 * GitHub Actions workflows use least-privilege permissions
 * The CI workflow uses read-only repository permissions
 * The security workflow grants CodeQL only the permissions required to publish code scanning results
-* CI runs formatting, module tidiness, vet, tests, race tests, Docker builds, latest-migration rollback verification, and PostgreSQL integration tests
+* CI runs formatting, module tidiness, vet, tests, race tests, full migration-chain verification against a disposable PostgreSQL service, PostgreSQL integration tests, and Docker builds
+* Destructive full migration-chain verification requires an explicit opt-in and must only target disposable local or CI databases
 * CodeQL and Go vulnerability checks run in a separate GitHub Actions security workflow
 * Dependabot is configured for Go modules, GitHub Actions, Dockerfiles, and Docker Compose
 
 ## Current scope
 
-The current implementation includes the Go HTTP API, health endpoints, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, PostgreSQL-backed reward claim creation, PostgreSQL-backed idempotency state, deterministic idempotency replay, transactional outbox writes, async outbox worker processing, CodeQL, and Go vulnerability checks.
+The current implementation includes the Go HTTP API, health and readiness endpoints, process-local Prometheus metrics, structured logging, baseline CI, repository hygiene, local PostgreSQL development, SQL migrations, the core database schema, PostgreSQL-backed readiness checks, PostgreSQL-backed reward claim creation, PostgreSQL-backed idempotency state, deterministic idempotency replay, transactional outbox writes, async outbox worker processing, concurrency and failure-mode hardening, CodeQL, and Go vulnerability checks.
 
 The core schema includes tables for reward claims, idempotency keys, and outbox events. Successful reward claim creation stores a `RewardClaimed` event in the transactional outbox with `pending` status. The async worker later claims due events, marks them as `processing`, publishes them through a small publisher interface, and then marks them as `published`, schedules retry, or moves them to `dead_letter`.
 
-The reward-claim API currently requires `Idempotency-Key`, validates the key, stores only the hashed key, records a request hash, persists completed response status and response body, replays completed responses for matching retries, and rejects reused keys with different request payloads.
+The reward-claim API requires exactly one non-empty `Idempotency-Key` header value, validates the key, stores only the hashed key, records a request hash, persists completed response status and response body, replays completed responses for matching retries, and rejects reused keys with different request payloads.
+
+Requests with multiple `Idempotency-Key` header values are rejected as invalid rather than relying on ambiguous first-value behavior.
 
 Validation errors, malformed JSON, unsupported content types, oversized request bodies, missing or invalid idempotency keys, dependency failures, and unexpected internal errors are not stored as idempotent responses.
 
+Known PostgreSQL availability conditions are mapped to a stable dependency-unavailable domain error and returned as `503 Service Unavailable`. Classification uses typed Go/pgx errors and explicitly named PostgreSQL SQLSTATE values rather than broad error-string matching.
+
+Schema errors, unexpected constraint violations, authentication failures, protocol errors, serialization failures, deadlocks, programming or invariant failures, and unknown PostgreSQL errors are not broadly reclassified as temporary dependency outages. They remain internal failures unless a separate explicit domain mapping applies.
+
+Low-level PostgreSQL and network error details are sanitized at the persistence boundary and are not returned to clients.
+
 The outbox worker currently uses a local simulated publisher. It demonstrates worker reliability mechanics, retry behavior, dead-letter handling, lease recovery, and safe PostgreSQL polling without introducing Kafka, Redis, webhooks, or another external broker.
 
-Prometheus and Grafana deployments, authentication, authorization, rate limiting, external integrations, administrative dead-letter replay tooling, and production incident response processes are not implemented yet.
+Prometheus and Grafana deployments, authentication, authorization, rate limiting, external integrations, administrative dead-letter replay tooling, automatic retention cleanup, and production incident response processes are not implemented.
 
 The API must not be exposed to untrusted or public networks without authentication, authorization, transport security, rate limiting, abuse controls, appropriate network restrictions, and a complete production security review.
 
-More complete security documentation will be added as the service grows, including a threat model for reward claims, idempotency, persistence, and async event delivery.
+More complete security documentation will be added in the final documentation slice, including a threat model for reward claims, idempotency, persistence, asynchronous event delivery, observability exposure, and operational failure modes.
 
 ## Metrics exposure
 
 The API exposes `/metrics` on its API listener and the worker exposes `/metrics` on its separate admin listener. Metrics are process-local; neither process proxies or aggregates the other process's registry.
 
-The local Docker Compose mappings bind both listeners to localhost. A production adaptation should place metric endpoints on private networking or restrict them through ingress, firewall, service mesh, or observability proxy policy. This repository intentionally does not implement a separate metric authentication secret or custom authentication scheme.
+The local Docker Compose mappings bind both listeners to localhost. A production adaptation should place metric endpoints on private networking or restrict them through ingress, firewall, or an observability proxy. This repository intentionally does not implement a separate metric authentication secret or custom authentication scheme.
 
 Metric labels are designed to remain low-cardinality. Identifiers such as player ID, campaign ID, reward ID, aggregate ID, event ID, worker ID, request ID, and idempotency key are prohibited. Raw request paths, raw errors, user agents, remote addresses, hostnames, process IDs, and attempt numbers are also excluded from labels.
 
 Metrics remain available when PostgreSQL is unavailable. Liveness checks process health only, while readiness checks required dependencies and worker-loop availability.
 
-## Database and secrets
+## Database, migrations, retention, and secrets
 
 The default `DATABASE_URL` is intended for local development only.
 
@@ -84,9 +101,22 @@ Production, staging, shared-environment, or otherwise sensitive credentials must
 
 Production-like environments should provide database credentials through their runtime secret-management mechanism.
 
-Application logs should not include full connection strings, authorization headers, request bodies, raw idempotency keys, outbox payloads, raw reward metadata, raw publisher errors, or other sensitive metadata.
+Application logs should not include full connection strings, authorization headers, request bodies, raw idempotency keys, outbox payloads, sensitive reward metadata, raw publisher errors, credentials, or other unnecessary sensitive metadata.
 
 The local PostgreSQL service is bound to `127.0.0.1:5432` for developer convenience. Anyone adapting this project for production should review network exposure, transport encryption, database roles, backup strategy, credential rotation, and least-privilege database access.
+
+The repository provides two migration verification paths:
+
+* `make db-check` verifies the latest migration with an up/down-one/up cycle.
+* `ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full` applies all migrations, rolls the schema down to version zero, and reapplies the full migration chain.
+
+The full migration-chain check is destructive. The explicit opt-in flag reduces accidental execution but does not prove that the configured database is safe to destroy. It must only be used against disposable local or CI databases and never against shared, staging, production, or production-like databases.
+
+Idempotency records include `expires_at` metadata, but the service does not perform expiry or cleanup in the reward claim request path and does not currently run an automatic idempotency cleanup job.
+
+Published and dead-lettered outbox events are retained because the service does not currently run automatic outbox cleanup. Routine retention must never delete `pending` or `processing` events.
+
+Retention periods, safe batched cleanup procedures, migration rollback preconditions, and operational safeguards are deferred to the runbook rather than implemented as an in-process scheduler.
 
 ## Outbox worker security and reliability notes
 
@@ -96,7 +126,9 @@ The worker claims one event at a time. It does not hold database row locks while
 
 Processing leases are owned through `locked_by`. Completion, retry, and dead-letter updates fail if the event has been reclaimed by another worker.
 
-The worker does not log outbox payloads or raw publisher errors. Logs should remain limited to safe operational fields such as worker ID, event ID, event type, aggregate type, aggregate ID, attempt number, failed-attempt count, status, retry delay, and retry time.
+The worker does not log outbox payloads, player identifiers, raw publisher errors, idempotency keys, request bodies, or unnecessary sensitive metadata.
+
+Operational identifiers such as worker ID, event ID, aggregate ID, event type, aggregate type, attempt number, failed-attempt count, status, retry delay, and retry time may be logged when needed for bounded operational debugging and correlation. These values are not used as Prometheus metric labels.
 
 `last_error` is stored for operational debugging and is bounded by a database constraint. The worker stores controlled failure classifications rather than raw publisher error messages.
 
@@ -104,7 +136,9 @@ Publisher implementations must honor context cancellation and deadlines.
 
 A shutdown cancellation during publishing is recorded in metrics with outcome `canceled`, but it does not increment `outbox_events.attempts` or persist a retry or dead-letter transition. The event remains `processing` until the lease expires and can then be recovered by another worker.
 
-Dead-lettered events are retained in PostgreSQL for inspection. This project does not yet include administrative tooling for replaying or deleting dead-lettered events. Operational handling for dead-lettered events will be documented later in the runbook.
+Dead-lettered events are retained in PostgreSQL for inspection. This project does not currently include administrative tooling for replaying or deleting dead-lettered events.
+
+Routine retention must not remove `pending` or `processing` events. Published and dead-lettered event retention periods and cleanup procedures will be defined as part of the operational runbook.
 
 ## Repository protection
 

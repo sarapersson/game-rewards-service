@@ -57,7 +57,8 @@ func rewardClaimsHandler(service rewardClaimCreator, observers ...RewardClaimObs
 			return
 		}
 
-		if err := validateIdempotencyKey(r.Header.Get(headerIdempotencyKey)); err != nil {
+		idempotencyKey, err := readIdempotencyKey(r.Header)
+		if err != nil {
 			if err == errMissingIdempotencyKey {
 				writeError(w, http.StatusBadRequest, errorCodeIdempotencyKeyRequired, "Idempotency-Key header is required")
 				return
@@ -86,7 +87,7 @@ func rewardClaimsHandler(service rewardClaimCreator, observers ...RewardClaimObs
 			PlayerID:       strings.TrimSpace(req.PlayerID),
 			CampaignID:     strings.TrimSpace(req.CampaignID),
 			RewardID:       strings.TrimSpace(req.RewardID),
-			IdempotencyKey: strings.TrimSpace(r.Header.Get(headerIdempotencyKey)),
+			IdempotencyKey: idempotencyKey,
 		})
 		for _, observer := range observers {
 			if observer != nil {
@@ -114,10 +115,27 @@ func (e rewardClaimValidationError) Error() string {
 	return string(e)
 }
 
+func readIdempotencyKey(header http.Header) (string, error) {
+	values := header.Values(headerIdempotencyKey)
+	if len(values) == 0 {
+		return "", errMissingIdempotencyKey
+	}
+
+	if len(values) != 1 {
+		return "", rewardClaimValidationError("multiple idempotency keys")
+	}
+
+	value := strings.TrimSpace(values[0])
+	if err := validateIdempotencyKey(value); err != nil {
+		return "", err
+	}
+
+	return value, nil
+}
+
 func validateIdempotencyKey(value string) error {
-	value = strings.TrimSpace(value)
 	if value == "" {
-		return errMissingIdempotencyKey
+		return rewardClaimValidationError("idempotency key is empty")
 	}
 
 	if len(value) > maxIdempotencyKeyLength {

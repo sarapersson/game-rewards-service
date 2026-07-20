@@ -477,6 +477,7 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
 
+	ready := make(chan struct{}, attempts)
 	start := make(chan struct{})
 	results := make(chan CreateClaimResult, attempts)
 	errs := make(chan error, attempts)
@@ -488,6 +489,7 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 		go func() {
 			defer wg.Done()
 
+			ready <- struct{}{}
 			<-start
 
 			result, err := store.CreateClaim(context.Background(), cmd)
@@ -500,6 +502,9 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 		}()
 	}
 
+	for range attempts {
+		<-ready
+	}
 	close(start)
 	wg.Wait()
 	close(results)
@@ -555,6 +560,71 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	if claimCount != 1 {
 		t.Fatalf("reward claim count = %d, want 1", claimCount)
 	}
+
+	claimIDs := make([]string, 0, len(cmds))
+	for _, cmd := range cmds {
+		claimIDs = append(claimIDs, cmd.Claim.ID)
+	}
+
+	outboxCount := countRewardClaimedOutboxEvents(t, pool, claimIDs...)
+	if outboxCount != 1 {
+		t.Fatalf("reward claimed outbox event count = %d, want 1", outboxCount)
+	}
+
+	var (
+		completedCount         int
+		processingCount        int
+		createdResponseCount   int
+		conflictResponseCount  int
+		linkedRewardClaimCount int
+	)
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT
+    count(*) FILTER (WHERE state = $3),
+    count(*) FILTER (WHERE state = $4),
+    count(*) FILTER (WHERE response_status = $5),
+    count(*) FILTER (WHERE response_status = $6),
+    count(*) FILTER (WHERE reward_claim_id IS NOT NULL)
+FROM idempotency_keys
+WHERE operation = $1 AND request_hash = $2`,
+		cmds[0].Operation,
+		cmds[0].RequestHash,
+		idempotencyStateCompleted,
+		idempotencyStateProcessing,
+		CreateClaimStatusCreated,
+		CreateClaimStatusConflict,
+	).Scan(
+		&completedCount,
+		&processingCount,
+		&createdResponseCount,
+		&conflictResponseCount,
+		&linkedRewardClaimCount,
+	)
+	if err != nil {
+		t.Fatalf("query concurrent idempotency state: %v", err)
+	}
+
+	if completedCount != attempts {
+		t.Fatalf("completed idempotency keys = %d, want %d", completedCount, attempts)
+	}
+
+	if processingCount != 0 {
+		t.Fatalf("processing idempotency keys = %d, want 0", processingCount)
+	}
+
+	if createdResponseCount != 1 {
+		t.Fatalf("stored created responses = %d, want 1", createdResponseCount)
+	}
+
+	if conflictResponseCount != attempts-1 {
+		t.Fatalf("stored conflict responses = %d, want %d", conflictResponseCount, attempts-1)
+	}
+
+	if linkedRewardClaimCount != 1 {
+		t.Fatalf("idempotency keys linked to reward claim = %d, want 1", linkedRewardClaimCount)
+	}
 }
 
 func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testing.T) {
@@ -577,6 +647,7 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
 
+	ready := make(chan struct{}, attempts)
 	start := make(chan struct{})
 	results := make(chan CreateClaimResult, attempts)
 	errs := make(chan error, attempts)
@@ -588,6 +659,7 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 		go func() {
 			defer wg.Done()
 
+			ready <- struct{}{}
 			<-start
 
 			result, err := store.CreateClaim(context.Background(), cmd)
@@ -600,6 +672,9 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 		}()
 	}
 
+	for range attempts {
+		<-ready
+	}
 	close(start)
 	wg.Wait()
 	close(results)
@@ -663,22 +738,49 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 		t.Fatalf("reward claim count = %d, want 1", claimCount)
 	}
 
-	var idempotencyCount int
+	var (
+		state          string
+		responseStatus int
+		storedBody     []byte
+		rewardClaimID  string
+	)
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT count(*)
+SELECT state, response_status, response_body, reward_claim_id::text
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`,
 		cmd.Operation,
 		cmd.KeyHash,
-	).Scan(&idempotencyCount)
+	).Scan(&state, &responseStatus, &storedBody, &rewardClaimID)
 	if err != nil {
-		t.Fatalf("count idempotency keys: %v", err)
+		t.Fatalf("query idempotency key: %v", err)
 	}
 
-	if idempotencyCount != 1 {
-		t.Fatalf("idempotency key count = %d, want 1", idempotencyCount)
+	if state != idempotencyStateCompleted {
+		t.Fatalf("idempotency state = %q, want %q", state, idempotencyStateCompleted)
+	}
+
+	if responseStatus != CreateClaimStatusCreated {
+		t.Fatalf("stored response status = %d, want %d", responseStatus, CreateClaimStatusCreated)
+	}
+
+	if !bytes.Equal(storedBody, responseBody) {
+		t.Fatalf("stored response body = %s, want %s", storedBody, responseBody)
+	}
+
+	if rewardClaimID == "" {
+		t.Fatal("idempotency key is not linked to the created reward claim")
+	}
+
+	claimIDs := make([]string, 0, len(cmds))
+	for _, cmd := range cmds {
+		claimIDs = append(claimIDs, cmd.Claim.ID)
+	}
+
+	outboxCount := countRewardClaimedOutboxEvents(t, pool, claimIDs...)
+	if outboxCount != 1 {
+		t.Fatalf("reward claimed outbox event count = %d, want 1", outboxCount)
 	}
 }
 
@@ -1204,6 +1306,32 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	return pool
+}
+
+func countRewardClaimedOutboxEvents(t *testing.T, pool *pgxpool.Pool, claimIDs ...string) int {
+	t.Helper()
+
+	total := 0
+	for _, claimID := range claimIDs {
+		var count int
+		err := pool.QueryRow(
+			context.Background(),
+			`
+SELECT count(*)
+FROM outbox_events
+WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
+			outboxAggregateTypeRewardClaim,
+			claimID,
+			outboxEventTypeRewardClaimed,
+		).Scan(&count)
+		if err != nil {
+			t.Fatalf("count reward claimed outbox events for claim %q: %v", claimID, err)
+		}
+
+		total += count
+	}
+
+	return total
 }
 
 func cleanupIntegrationCreateClaimData(
