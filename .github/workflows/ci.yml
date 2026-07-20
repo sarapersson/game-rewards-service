@@ -62,8 +62,10 @@ jobs:
       - name: Run race tests
         run: make test-race
 
-      - name: Verify database migrations
-        run: make db-check
+      - name: Verify full database migration chain
+        run: make db-check-full
+        env:
+          ALLOW_DESTRUCTIVE_DB_CHECK: "1"
 
       - name: Run integration tests
         run: make test-integration

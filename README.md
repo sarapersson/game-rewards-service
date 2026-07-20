@@ -6,7 +6,7 @@ The codebase is developed through small, reviewable changes with a focus on corr
 
 ## Status
 
-Current implementation: Go HTTP API, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, async outbox worker, process-local Prometheus metrics, CI, and baseline security checks.
+Current implementation: Go HTTP API, PostgreSQL persistence, reward claim creation, deterministic idempotency replay, transactional outbox writes, async outbox worker, process-local Prometheus metrics, concurrency and failure-mode hardening, CI, and baseline security checks.
 
 Implemented so far:
 
@@ -14,12 +14,15 @@ Implemented so far:
 * API `/livez`, `/readyz`, and `/metrics`
 * Worker admin `/livez`, `/readyz`, and `/metrics`
 * `POST /v1/reward-claims`
-* Required `Idempotency-Key` support for `POST /v1/reward-claims`
+* Required single non-empty `Idempotency-Key` support for `POST /v1/reward-claims`
+* Rejection of ambiguous requests with multiple `Idempotency-Key` header values
 * Deterministic idempotency replay for completed reward claim requests
 * Request hash mismatch handling for reused idempotency keys
 * PostgreSQL-backed reward claim creation
 * PostgreSQL-backed idempotency state
 * PostgreSQL-backed readiness check
+* PostgreSQL availability classification for known transient connection, network, timeout, and server-availability failures
+* Separation of dependency-unavailable failures from schema, invariant, authentication, and unexpected internal errors
 * PostgreSQL 18.4 local development with Docker Compose
 * SQL migrations
 * Core schema for reward claims, idempotency keys, and outbox events
@@ -31,6 +34,8 @@ Implemented so far:
 * Lease ownership checks that prevent stale workers from overwriting reclaimed events
 * Schema-level constraints for duplicate reward prevention and critical invariants
 * Schema-level uniqueness for one outbox event of each type per aggregate
+* Concurrent reward-claim integration tests that verify final claim, idempotency, and outbox state
+* Full migration-chain verification against disposable databases
 * Prometheus-style low-cardinality HTTP, reward, idempotency, and outbox worker metrics
 * Separate explicit metric registries for the API and worker processes
 * Structured logging with `log/slog`
@@ -46,7 +51,7 @@ Implemented so far:
 * Makefile
 * Dockerfile
 * GitHub Actions CI
-* Baseline CI checks for formatting, module tidiness, vet, tests, race tests, migrations, integration tests, and Docker builds
+* Baseline CI checks for formatting, module tidiness, vet, tests, race tests, full migration-chain verification, integration tests, and Docker builds
 * Separate security workflow for CodeQL code scanning and Go vulnerability checks
 * GitHub Actions concurrency cancellation for superseded workflow runs
 * Dependabot baseline for Go modules, GitHub Actions, Dockerfiles, and Docker Compose
@@ -187,6 +192,24 @@ make db-check
 
 The command is intended for clean local and CI databases. If you have created manual local reward claim data, clear it or reset the local database before running `db-check`. Do not run it against shared, staging, or production-like databases.
 
+Destructively verify the complete migration chain against a disposable database:
+
+```bash
+ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full
+```
+
+`db-check-full` applies all migrations, rolls the schema down to version zero, and reapplies all migrations. It refuses to run unless `ALLOW_DESTRUCTIVE_DB_CHECK=1` is explicitly set.
+
+The opt-in flag is a guard against accidental use, not proof that the configured database is safe to destroy. Run this target only against a disposable local or CI database and never against shared, staging, or production-like databases.
+
+### Retention
+
+`idempotency_keys` includes `expires_at` metadata, but expiry and cleanup are intentionally kept out of the reward claim request path. The service does not currently run an automatic idempotency cleanup job.
+
+Published and dead-lettered outbox events are also retained without automatic cleanup. Routine retention must never remove `pending` or `processing` events.
+
+Retention periods, safe batched cleanup procedures, and operational safeguards are intentionally deferred to the runbook rather than implemented as an in-process scheduler.
+
 The local Docker Compose setup uses PostgreSQL 18.4 and development-only credentials. PostgreSQL is bound to localhost for local development. Do not reuse the local credentials outside local development.
 
 ## Run tests
@@ -207,6 +230,12 @@ Verify database migrations locally:
 
 ```bash
 make db-check
+```
+
+Verify the complete migration chain against a disposable database:
+
+```bash
+ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full
 ```
 
 Run PostgreSQL integration tests against an already running and migrated local database:
@@ -237,11 +266,11 @@ make vuln
 
 GitHub Actions runs baseline checks on pull requests to `main`, pushes to `main`, and manual workflow dispatches.
 
-The CI workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies database migrations, runs Go checks including race tests and PostgreSQL integration tests, and builds the local Docker image:
+The CI workflow uses least-privilege read-only repository permissions. It starts a PostgreSQL 18.4 service, verifies the complete migration chain against the workflow's disposable database, runs Go checks including race tests and PostgreSQL integration tests, and builds the local Docker image:
 
 * `make check`
 * `make test-race`
-* `make db-check`
+* `make db-check-full` against the workflow's disposable PostgreSQL service
 * `make test-integration`
 * `make docker-build`
 
@@ -436,7 +465,9 @@ Creates a reward claim for a player in a campaign.
 
 Successful claim creation also stores a `RewardClaimed` event in the PostgreSQL-backed transactional outbox in the same database transaction as the claim and idempotency response. The event is stored with `pending` status for the async outbox worker; the request path does not call external publishers.
 
-This endpoint requires an `Idempotency-Key` header. The service uses the key to provide deterministic retry behavior for reward claim creation. Raw idempotency keys are not stored; the service stores a SHA-256 key hash, request hash, idempotency state, response status, and response body.
+This endpoint requires exactly one non-empty `Idempotency-Key` header value. Requests with multiple header values are rejected as ambiguous. The service uses the key to provide deterministic retry behavior for reward claim creation.
+
+Raw idempotency keys are not stored; the service stores a SHA-256 key hash, request hash, idempotency state, response status, and response body.
 
 Request:
 
@@ -506,7 +537,7 @@ If the service observes an already committed processing idempotency record, it r
 }
 ```
 
-Validation errors, malformed JSON, unsupported content types, oversized request bodies, missing idempotency keys, invalid idempotency keys, dependency failures, and unexpected internal errors are not stored as idempotent responses.
+Validation errors, malformed JSON, unsupported content types, oversized request bodies, missing or invalid idempotency keys, dependency failures, and unexpected internal errors are not stored as idempotent responses.
 
 Duplicate reward claims for the same `player_id`, `campaign_id`, and `reward_id` return `409 Conflict`:
 
@@ -520,6 +551,8 @@ Duplicate reward claims for the same `player_id`, `campaign_id`, and `reward_id`
 ```
 
 Duplicate reward responses are also stored for the idempotency key that produced them, so retrying the duplicate request with the same key replays the same `409 Conflict` response.
+
+Known transient PostgreSQL availability failures are returned as `503 Service Unavailable`. Schema, invariant, authentication, and unexpected database failures remain internal errors and are not exposed as transient dependency failures. Raw PostgreSQL, network, connection-string, and credential details are never returned to clients.
 
 Common responses:
 
@@ -540,7 +573,7 @@ Common responses:
 
 Current validation rules:
 
-* `Idempotency-Key` is required.
+* Exactly one non-empty `Idempotency-Key` header value is required; multiple values are rejected as invalid.
 * `Idempotency-Key` must be at most 255 bytes and must not contain control characters.
 * `Content-Type` must be `application/json`; parameters such as `charset=utf-8` are accepted.
 * Request body size is limited to 64 KiB.
@@ -703,6 +736,12 @@ make db-check
 make test-integration-local
 make ci
 make docker-build
+```
+
+Use the destructive full migration-chain check separately when validating migration history against a disposable database:
+
+```bash
+ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full
 ```
 
 ## License

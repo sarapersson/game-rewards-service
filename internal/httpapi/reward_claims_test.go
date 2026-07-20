@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,9 +105,14 @@ func TestRewardClaimsHandlerRejectsInvalidIdempotencyKey(t *testing.T) {
 		wantCode string
 	}{
 		{
-			name:     "blank",
+			name:     "empty",
+			key:      "",
+			wantCode: errorCodeInvalidIdempotencyKey,
+		},
+		{
+			name:     "whitespace only",
 			key:      "   ",
-			wantCode: errorCodeIdempotencyKeyRequired,
+			wantCode: errorCodeInvalidIdempotencyKey,
 		},
 		{
 			name:     "too long",
@@ -122,12 +128,13 @@ func TestRewardClaimsHandlerRejectsInvalidIdempotencyKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			service := &recordingRewardClaimService{}
 			req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(`{}`))
 			req.Header.Set(headerIdempotencyKey, tt.key)
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+			rewardClaimsHandler(service).ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -136,7 +143,34 @@ func TestRewardClaimsHandlerRejectsInvalidIdempotencyKey(t *testing.T) {
 			if !strings.Contains(rec.Body.String(), tt.wantCode) {
 				t.Fatalf("response body = %q, want error code %q", rec.Body.String(), tt.wantCode)
 			}
+
+			if service.called {
+				t.Fatal("service was called for invalid Idempotency-Key")
+			}
 		})
+	}
+}
+
+func TestRewardClaimsHandlerRejectsMultipleIdempotencyKeys(t *testing.T) {
+	service := &recordingRewardClaimService{}
+	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(`{}`))
+	req.Header.Add(headerIdempotencyKey, "claim-key-123")
+	req.Header.Add(headerIdempotencyKey, "claim-key-456")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	if !strings.Contains(rec.Body.String(), errorCodeInvalidIdempotencyKey) {
+		t.Fatalf("response body = %q, want error code %q", rec.Body.String(), errorCodeInvalidIdempotencyKey)
+	}
+
+	if service.called {
+		t.Fatal("service was called for multiple Idempotency-Key values")
 	}
 }
 
@@ -508,6 +542,36 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 				t.Fatalf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
 			}
 		})
+	}
+}
+
+func TestRewardClaimsHandlerDoesNotExposeServiceErrorDetails(t *testing.T) {
+	const sensitiveDetail = "postgres://user:super-secret@internal-db.example:5432/game_rewards"
+
+	service := &recordingRewardClaimService{
+		err: fmt.Errorf("%s: %w", sensitiveDetail, rewards.ErrUnavailable),
+	}
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+
+	if strings.Contains(rec.Body.String(), sensitiveDetail) {
+		t.Fatal("response exposed internal service error details")
+	}
+
+	if !strings.Contains(rec.Body.String(), errorCodeUnavailable) {
+		t.Fatalf("response body = %q, want error code %q", rec.Body.String(), errorCodeUnavailable)
 	}
 }
 
