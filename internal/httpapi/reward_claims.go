@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -46,6 +47,14 @@ type createRewardClaimRequest struct {
 }
 
 func rewardClaimsHandler(service rewardClaimCreator, observers ...RewardClaimObserver) http.HandlerFunc {
+	return rewardClaimsHandlerWithLogger(nil, service, observers...)
+}
+
+func rewardClaimsHandlerWithLogger(
+	logger *slog.Logger,
+	service rewardClaimCreator,
+	observers ...RewardClaimObserver,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
@@ -95,6 +104,7 @@ func rewardClaimsHandler(service rewardClaimCreator, observers ...RewardClaimObs
 			}
 		}
 		if err != nil {
+			logCreateClaimError(r, logger, err)
 			writeCreateClaimError(w, err)
 			return
 		}
@@ -211,6 +221,10 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 		return fmt.Errorf("player_id is required")
 	}
 
+	if strings.ContainsRune(playerID, '\x00') {
+		return fmt.Errorf("player_id must not contain NUL characters")
+	}
+
 	if utf8.RuneCountInString(playerID) > rewards.MaxIDLength {
 		return fmt.Errorf("player_id must be at most %d characters", rewards.MaxIDLength)
 	}
@@ -218,6 +232,10 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 	campaignID := strings.TrimSpace(req.CampaignID)
 	if campaignID == "" {
 		return fmt.Errorf("campaign_id is required")
+	}
+
+	if strings.ContainsRune(campaignID, '\x00') {
+		return fmt.Errorf("campaign_id must not contain NUL characters")
 	}
 
 	if utf8.RuneCountInString(campaignID) > rewards.MaxIDLength {
@@ -229,11 +247,47 @@ func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
 		return fmt.Errorf("reward_id is required")
 	}
 
+	if strings.ContainsRune(rewardID, '\x00') {
+		return fmt.Errorf("reward_id must not contain NUL characters")
+	}
+
 	if utf8.RuneCountInString(rewardID) > rewards.MaxIDLength {
 		return fmt.Errorf("reward_id must be at most %d characters", rewards.MaxIDLength)
 	}
 
 	return nil
+}
+
+func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
+	if logger == nil {
+		return
+	}
+
+	level := slog.LevelError
+	errorClass := "unexpected"
+	switch {
+	case errors.Is(err, rewards.ErrUnavailable):
+		level = slog.LevelWarn
+		errorClass = "unavailable"
+	case errors.Is(err, rewards.ErrInternal):
+		errorClass = "internal"
+	default:
+		if rewards.IsValidationError(err) ||
+			errors.Is(err, rewards.ErrDuplicateClaim) ||
+			errors.Is(err, rewards.ErrIdempotencyKeyReused) ||
+			errors.Is(err, rewards.ErrIdempotencyInProgress) {
+			return
+		}
+	}
+
+	logger.Log(
+		r.Context(),
+		level,
+		"reward claim request failed",
+		slog.String("request_id", requestIDFromRequest(r)),
+		slog.String("operation", "reward_claim_create"),
+		slog.String("error_class", errorClass),
+	)
 }
 
 func writeCreateClaimError(w http.ResponseWriter, err error) {
