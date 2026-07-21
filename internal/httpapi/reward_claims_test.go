@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -250,6 +252,24 @@ func TestRewardClaimsHandlerRejectsInvalidJSONBody(t *testing.T) {
 		{
 			name:       "missing reward_id",
 			body:       `{"player_id":"player-123","campaign_id":"campaign-123"}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   errorCodeInvalidRequest,
+		},
+		{
+			name:       "player_id contains NUL",
+			body:       `{"player_id":"player\u0000one","campaign_id":"campaign-123","reward_id":"reward-123"}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   errorCodeInvalidRequest,
+		},
+		{
+			name:       "campaign_id contains NUL",
+			body:       `{"player_id":"player-123","campaign_id":"campaign\u0000one","reward_id":"reward-123"}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   errorCodeInvalidRequest,
+		},
+		{
+			name:       "reward_id contains NUL",
+			body:       `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward\u0000one"}`,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   errorCodeInvalidRequest,
 		},
@@ -575,6 +595,51 @@ func TestRewardClaimsHandlerDoesNotExposeServiceErrorDetails(t *testing.T) {
 	}
 }
 
+func TestRewardClaimsHandlerLogsSafeInternalError(t *testing.T) {
+	const (
+		requestID       = "request-123"
+		sensitiveDetail = "postgres://user:super-secret@internal-db.example:5432/game_rewards"
+	)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	service := &recordingRewardClaimService{
+		err: fmt.Errorf("%s: %w", sensitiveDetail, rewards.ErrInternal),
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
+	req = req.WithContext(contextWithRequestID(req.Context(), requestID))
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandlerWithLogger(logger, service).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		`"msg":"reward claim request failed"`,
+		`"request_id":"` + requestID + `"`,
+		`"operation":"reward_claim_create"`,
+		`"error_class":"internal"`,
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output = %q, want %q", logOutput, want)
+		}
+	}
+
+	if strings.Contains(logOutput, sensitiveDetail) {
+		t.Fatal("log output exposed internal service error details")
+	}
+}
+
 type recordingRewardObserver struct {
 	called bool
 	result rewards.CreateClaimResult
@@ -610,6 +675,7 @@ func TestRewardClaimsHandlerObservesServiceOutcome(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rec.Code)
 	}
+
 	if !observer.called || observer.result.StatusCode != http.StatusCreated || observer.err != nil {
 		t.Fatalf("unexpected observation: %#v", observer)
 	}

@@ -99,6 +99,13 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 		return ValidationError{Field: "player_id", Message: "player_id is required"}
 	}
 
+	if strings.ContainsRune(cmd.PlayerID, '\x00') {
+		return ValidationError{
+			Field:   "player_id",
+			Message: "player_id must not contain NUL characters",
+		}
+	}
+
 	if utf8.RuneCountInString(cmd.PlayerID) > MaxIDLength {
 		return ValidationError{
 			Field:   "player_id",
@@ -110,6 +117,13 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 		return ValidationError{Field: "campaign_id", Message: "campaign_id is required"}
 	}
 
+	if strings.ContainsRune(cmd.CampaignID, '\x00') {
+		return ValidationError{
+			Field:   "campaign_id",
+			Message: "campaign_id must not contain NUL characters",
+		}
+	}
+
 	if utf8.RuneCountInString(cmd.CampaignID) > MaxIDLength {
 		return ValidationError{
 			Field:   "campaign_id",
@@ -119,6 +133,13 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 
 	if cmd.RewardID == "" {
 		return ValidationError{Field: "reward_id", Message: "reward_id is required"}
+	}
+
+	if strings.ContainsRune(cmd.RewardID, '\x00') {
+		return ValidationError{
+			Field:   "reward_id",
+			Message: "reward_id must not contain NUL characters",
+		}
 	}
 
 	if utf8.RuneCountInString(cmd.RewardID) > MaxIDLength {

@@ -28,7 +28,10 @@ func newRouterWithObservability(
 	if observability.MetricsHandler != nil {
 		mux.Handle(routeMetrics, observability.MetricsHandler)
 	}
-	mux.HandleFunc(routeRewardClaims, rewardClaimsHandler(rewardClaims, observability.RewardClaimObserver))
+	mux.HandleFunc(
+		routeRewardClaims,
+		rewardClaimsHandlerWithLogger(logger, rewardClaims, observability.RewardClaimObserver),
+	)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, errorCodeNotFound, "Not found")
 	})

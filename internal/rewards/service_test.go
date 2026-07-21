@@ -184,6 +184,36 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 			wantField: "reward_id",
 		},
 		{
+			name: "player_id contains NUL",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player\x00one",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward-123",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField: "player_id",
+		},
+		{
+			name: "campaign_id contains NUL",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "campaign\x00one",
+				RewardID:       "reward-123",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField: "campaign_id",
+		},
+		{
+			name: "reward_id contains NUL",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward\x00one",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField: "reward_id",
+		},
+		{
 			name: "player_id too long",
 			cmd: CreateClaimCommand{
 				PlayerID:       stringOfLength(MaxIDLength + 1),
