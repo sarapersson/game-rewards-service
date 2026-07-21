@@ -1,0 +1,281 @@
+openapi: 3.1.2
+
+info:
+  title: game-rewards-service API
+  version: 1.0.0
+  description: Client-facing contract for the v1 reward-claim API.
+
+security: []
+
+paths:
+  /v1/reward-claims:
+    post:
+      operationId: createRewardClaim
+      summary: Create a reward claim
+      description: |
+        Creates a reward claim for a player within a campaign.
+
+        Exactly one `Idempotency-Key` header value is required. Surrounding
+        whitespace is trimmed before validation and hashing. Repeating the same
+        normalized key with the same accepted request replays the stored response;
+        reusing it with a different accepted request returns
+        `409 idempotency_key_reused`.
+
+        Business duplicate prevention is separate from idempotency. A different
+        key for the same `(player_id, campaign_id, reward_id)` returns
+        `409 reward_already_claimed`.
+
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestID'
+
+      requestBody:
+        required: true
+        description: |
+          A single JSON object, limited to 64 KiB. Unknown fields and additional
+          JSON values are rejected. `Content-Type` must parse as
+          `application/json`; media-type parameters such as `charset=utf-8` are
+          accepted.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRewardClaimRequest'
+            example:
+              player_id: player-123
+              campaign_id: winter-2026
+              reward_id: daily-login
+
+      responses:
+        '201':
+          description: Reward claim created, or a stored successful response replayed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RewardClaim'
+              example:
+                claim_id: 8f2e7b38-7e2d-4d4c-91b5-1c4d5f5c7c0a
+                player_id: player-123
+                campaign_id: winter-2026
+                reward_id: daily-login
+                status: claimed
+                claimed_at: '2026-07-07T12:34:56.123456Z'
+
+        '400':
+          description: |
+            Invalid request. Possible error codes are `invalid_json`,
+            `invalid_request`, `idempotency_key_required`, and
+            `invalid_idempotency_key`.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '409':
+          description: |
+            Conflict. Possible error codes are `reward_already_claimed`,
+            `idempotency_key_reused`, and `idempotency_key_in_progress`.
+
+            A stored duplicate-reward response can also be replayed as `409`.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+            Retry-After:
+              description: Present as `1` for `idempotency_key_in_progress`.
+              schema:
+                type: string
+                const: '1'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '413':
+          description: Request body exceeds the 64 KiB limit.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: request_body_too_large
+                  message: Request body is too large
+
+        '415':
+          description: Content-Type does not parse as application/json.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: unsupported_media_type
+                  message: Content-Type must be application/json
+
+        '500':
+          description: Unexpected internal, schema, invariant, or programming failure.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: internal_error
+                  message: Internal server error
+
+        '503':
+          description: Known dependency-availability failure.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: service_unavailable
+                  message: Service unavailable
+
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Exactly one actual header value is accepted. Surrounding whitespace is
+        trimmed before validation and hashing. The normalized value must be
+        non-empty, at most 255 bytes, and contain no ASCII control characters.
+
+        A comma inside one header value remains part of the key; it is not parsed
+        as multiple keys.
+      schema:
+        type: string
+
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: |
+        Optional correlation ID. Surrounding whitespace is trimmed. A client
+        value is accepted only when it is at most 128 bytes and contains ASCII
+        letters, digits, `-`, `_`, `.`, or `:`; otherwise the service generates
+        a replacement ID.
+      schema:
+        type: string
+
+  headers:
+    RequestID:
+      description: Effective request correlation ID.
+      schema:
+        type: string
+
+    IdempotentReplayed:
+      description: |
+        Present as `true` when the status and body were loaded from a completed
+        idempotency record. It can appear on stored `201` and stored `409`
+        duplicate-reward responses.
+      schema:
+        type: string
+        const: 'true'
+
+  schemas:
+    CreateRewardClaimRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - player_id
+        - campaign_id
+        - reward_id
+      properties:
+        player_id:
+          type: string
+          description: |
+            After trimming surrounding whitespace, the value must be non-empty,
+            at most 128 Unicode characters, and contain no NUL characters.
+        campaign_id:
+          type: string
+          description: |
+            After trimming surrounding whitespace, the value must be non-empty,
+            at most 128 Unicode characters, and contain no NUL characters.
+        reward_id:
+          type: string
+          description: |
+            After trimming surrounding whitespace, the value must be non-empty,
+            at most 128 Unicode characters, and contain no NUL characters.
+
+    RewardClaim:
+      type: object
+      additionalProperties: false
+      required:
+        - claim_id
+        - player_id
+        - campaign_id
+        - reward_id
+        - status
+        - claimed_at
+      properties:
+        claim_id:
+          type: string
+          format: uuid
+        player_id:
+          type: string
+        campaign_id:
+          type: string
+        reward_id:
+          type: string
+        status:
+          type: string
+          const: claimed
+        claimed_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_json
+                - invalid_request
+                - idempotency_key_required
+                - invalid_idempotency_key
+                - reward_already_claimed
+                - idempotency_key_reused
+                - idempotency_key_in_progress
+                - request_body_too_large
+                - unsupported_media_type
+                - service_unavailable
+                - internal_error
+            message:
+              type: string
