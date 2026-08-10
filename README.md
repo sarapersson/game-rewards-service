@@ -105,7 +105,7 @@ make stack-down
 
 `POST /v1/reward-claims` requires exactly one non-empty `Idempotency-Key` header value and a JSON body containing `player_id`, `campaign_id`, and `reward_id`.
 
-The three identifiers are trimmed, required, and limited to 128 Unicode characters. The idempotency key is trimmed, limited to 255 bytes, and rejects control characters. Request bodies are limited to 64 KiB; unknown JSON fields and multiple JSON values are rejected.
+The three identifiers are trimmed, required, and limited to 128 Unicode characters. The idempotency key is trimmed, limited to 255 bytes, and rejects control characters. Request bodies must be valid UTF-8 and are limited to 64 KiB; unknown JSON fields and multiple JSON values are rejected.
 
 | Scenario                                       | Result                                               |
 | ---------------------------------------------- | ---------------------------------------------------- |
