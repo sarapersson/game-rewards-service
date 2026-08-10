@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -172,8 +173,18 @@ func isJSONContentType(value string) bool {
 
 func decodeCreateRewardClaimRequest(w http.ResponseWriter, r *http.Request) (createRewardClaimRequest, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRewardClaimBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeDecodeError(w, err)
+		return createRewardClaimRequest{}, false
+	}
 
-	decoder := json.NewDecoder(r.Body)
+	if !utf8.Valid(body) {
+		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body must be valid JSON")
+		return createRewardClaimRequest{}, false
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
 	var req createRewardClaimRequest

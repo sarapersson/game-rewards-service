@@ -32,8 +32,8 @@ paths:
       requestBody:
         required: true
         description: |
-          A single JSON object, limited to 64 KiB. Unknown fields and additional
-          JSON values are rejected. `Content-Type` must parse as
+          A single UTF-8 JSON object, limited to 64 KiB. Invalid UTF-8, unknown
+          fields, and additional JSON values are rejected. `Content-Type` must parse as
           `application/json`; media-type parameters such as `charset=utf-8` are
           accepted.
         content:

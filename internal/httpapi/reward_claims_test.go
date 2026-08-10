@@ -313,6 +313,30 @@ func TestRewardClaimsHandlerRejectsInvalidJSONBody(t *testing.T) {
 	}
 }
 
+func TestRewardClaimsHandlerRejectsInvalidUTF8(t *testing.T) {
+	body := append([]byte(`{"player_id":"player-`), 0xff)
+	body = append(body, []byte(`","campaign_id":"campaign-123","reward_id":"reward-123"}`)...)
+	service := &recordingRewardClaimService{}
+	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, bytes.NewReader(body))
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	if !strings.Contains(rec.Body.String(), errorCodeInvalidJSON) {
+		t.Fatalf("response body = %q, want error code %q", rec.Body.String(), errorCodeInvalidJSON)
+	}
+
+	if service.called {
+		t.Fatal("service was called for invalid UTF-8 request body")
+	}
+}
+
 func TestRewardClaimsHandlerRejectsLargeBody(t *testing.T) {
 	body := `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"` +
 		strings.Repeat("a", maxRewardClaimBodyBytes) +
