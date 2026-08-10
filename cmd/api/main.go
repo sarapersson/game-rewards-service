@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sarapersson/game-rewards-service/internal/config"
 	"github.com/sarapersson/game-rewards-service/internal/httpapi"
@@ -79,17 +81,17 @@ func run() int {
 		},
 	)
 
-	errCh := make(chan error, 1)
+	serverErrCh := make(chan error, 1)
 
 	logger.Info("starting http server", slog.String("addr", server.Addr))
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-			return
+		err := server.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
 
-		errCh <- nil
+		serverErrCh <- err
 	}()
 
 	shutdownCh := make(chan os.Signal, 1)
@@ -97,7 +99,7 @@ func run() int {
 	defer signal.Stop(shutdownCh)
 
 	select {
-	case err := <-errCh:
+	case err := <-serverErrCh:
 		if err != nil {
 			logger.Error("http server failed", slog.Any("error", err))
 			return 1
@@ -108,17 +110,43 @@ func run() int {
 	case sig := <-shutdownCh:
 		logger.Info("shutdown signal received", slog.String("signal", sig.String()))
 
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Error("graceful shutdown failed", slog.Any("error", err))
+		if err := stopHTTPServer(cfg.ShutdownTimeout, server, serverErrCh); err != nil {
+			logger.Error("http server shutdown failed", slog.Any("error", err))
 			return 1
 		}
 
 		logger.Info("shutdown complete")
 		return 0
 	}
+}
+
+func stopHTTPServer(
+	shutdownTimeout time.Duration,
+	server *http.Server,
+	serveResult <-chan error,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	shutdownErr := server.Shutdown(ctx)
+	var closeErr error
+	if shutdownErr != nil {
+		closeErr = server.Close()
+	}
+
+	serverErr := <-serveResult
+
+	if shutdownErr != nil {
+		shutdownErr = fmt.Errorf("graceful http server shutdown: %w", shutdownErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("force close http server: %w", closeErr)
+	}
+	if serverErr != nil {
+		serverErr = fmt.Errorf("http server stopped: %w", serverErr)
+	}
+
+	return errors.Join(shutdownErr, closeErr, serverErr)
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

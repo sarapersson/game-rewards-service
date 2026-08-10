@@ -14,6 +14,59 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+type rollbackTestTx struct {
+	pgx.Tx
+	rollbackFn func(context.Context) error
+}
+
+func (tx *rollbackTestTx) Rollback(ctx context.Context) error {
+	return tx.rollbackFn(ctx)
+}
+
+func TestPostgresStoreRollbackTransactionIsBounded(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+
+	type rollbackObservation struct {
+		hasDeadline bool
+		err         error
+	}
+
+	observation := make(chan rollbackObservation, 1)
+	tx := &rollbackTestTx{
+		rollbackFn: func(ctx context.Context) error {
+			_, hasDeadline := ctx.Deadline()
+			<-ctx.Done()
+
+			observation <- rollbackObservation{
+				hasDeadline: hasDeadline,
+				err:         ctx.Err(),
+			}
+			return ctx.Err()
+		},
+	}
+
+	store := &PostgresStore{queryTimeout: timeout}
+	done := make(chan struct{})
+	go func() {
+		store.rollbackTransaction(tx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("rollback did not finish within the bounded test window")
+	}
+
+	got := <-observation
+	if !got.hasDeadline {
+		t.Fatal("rollback context did not have a deadline")
+	}
+	if !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("rollback context error = %v, want deadline exceeded", got.err)
+	}
+}
+
 func TestMapPostgresErrorDuplicateClaim(t *testing.T) {
 	err := mapPostgresError(&pgconn.PgError{
 		Code:           postgresSQLStateUniqueViolation,

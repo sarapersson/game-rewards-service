@@ -55,9 +55,7 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 	if err != nil {
 		return CreateClaimResult{}, mapPostgresError(err)
 	}
-	defer func() {
-		_ = tx.Rollback(context.Background())
-	}()
+	defer s.rollbackTransaction(tx)
 
 	inserted, err := insertProcessingIdempotencyKey(queryCtx, tx, cmd)
 	if err != nil {
@@ -105,6 +103,14 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 	}
 
 	return result, nil
+}
+
+func (s *PostgresStore) rollbackTransaction(tx pgx.Tx) {
+	// Rollback must outlive a canceled request while remaining bounded.
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), s.queryTimeout)
+	defer cancel()
+
+	_ = tx.Rollback(rollbackCtx)
 }
 
 func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
