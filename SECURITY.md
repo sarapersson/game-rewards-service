@@ -27,6 +27,7 @@ The service does **not** implement authentication or authorization, rate limitin
 * PostgreSQL constraints enforce critical invariants, and claim creation, idempotency completion, and outbox creation commit atomically.
 * Known dependency-availability failures are distinguished from unexpected internal, schema, and invariant failures; low-level database and network details are not returned to clients.
 * HTTP, database, publisher, and shutdown operations use explicit timeouts.
+* API shutdown force-closes remaining HTTP connections after the graceful timeout, and reward-claim transaction rollback uses an independent bounded cleanup context.
 * Worker publishing uses leases and ownership-fenced finalization; no database transaction or row lock is held while the publisher executes.
 * Docker runs as a non-root user with versioned base images, and local Compose ports bind to `127.0.0.1`.
 * GitHub Actions use least-privilege permissions and `persist-credentials: false`, and run formatting, vet, tests, race tests, migration/integration checks, Docker builds, CodeQL, and `govulncheck`.
