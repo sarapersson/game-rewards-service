@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -88,20 +87,17 @@ func rewardClaimsHandlerWithLogger(
 			return
 		}
 
-		if err := validateCreateRewardClaimRequest(req); err != nil {
-			writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, err.Error())
-			return
-		}
-
 		result, err := service.CreateClaim(r.Context(), rewards.CreateClaimCommand{
-			PlayerID:       strings.TrimSpace(req.PlayerID),
-			CampaignID:     strings.TrimSpace(req.CampaignID),
-			RewardID:       strings.TrimSpace(req.RewardID),
+			PlayerID:       req.PlayerID,
+			CampaignID:     req.CampaignID,
+			RewardID:       req.RewardID,
 			IdempotencyKey: idempotencyKey,
 		})
-		for _, observer := range observers {
-			if observer != nil {
-				observer.ObserveRewardClaim(result, err)
+		if !rewards.IsValidationError(err) {
+			for _, observer := range observers {
+				if observer != nil {
+					observer.ObserveRewardClaim(result, err)
+				}
 			}
 		}
 		if err != nil {
@@ -224,49 +220,6 @@ func writeDecodeError(w http.ResponseWriter, err error) {
 	}
 
 	writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body must be valid JSON")
-}
-
-func validateCreateRewardClaimRequest(req createRewardClaimRequest) error {
-	playerID := strings.TrimSpace(req.PlayerID)
-	if playerID == "" {
-		return fmt.Errorf("player_id is required")
-	}
-
-	if strings.ContainsRune(playerID, '\x00') {
-		return fmt.Errorf("player_id must not contain NUL characters")
-	}
-
-	if utf8.RuneCountInString(playerID) > rewards.MaxIDLength {
-		return fmt.Errorf("player_id must be at most %d characters", rewards.MaxIDLength)
-	}
-
-	campaignID := strings.TrimSpace(req.CampaignID)
-	if campaignID == "" {
-		return fmt.Errorf("campaign_id is required")
-	}
-
-	if strings.ContainsRune(campaignID, '\x00') {
-		return fmt.Errorf("campaign_id must not contain NUL characters")
-	}
-
-	if utf8.RuneCountInString(campaignID) > rewards.MaxIDLength {
-		return fmt.Errorf("campaign_id must be at most %d characters", rewards.MaxIDLength)
-	}
-
-	rewardID := strings.TrimSpace(req.RewardID)
-	if rewardID == "" {
-		return fmt.Errorf("reward_id is required")
-	}
-
-	if strings.ContainsRune(rewardID, '\x00') {
-		return fmt.Errorf("reward_id must not contain NUL characters")
-	}
-
-	if utf8.RuneCountInString(rewardID) > rewards.MaxIDLength {
-		return fmt.Errorf("reward_id must be at most %d characters", rewards.MaxIDLength)
-	}
-
-	return nil
 }
 
 func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {

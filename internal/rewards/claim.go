@@ -4,8 +4,8 @@ package rewards
 import "time"
 
 const (
-	// MaxIDLength matches the database constraints for player, campaign, and reward identifiers.
-	MaxIDLength = 128
+	// maxIDLength matches the database constraints for player, campaign, and reward identifiers.
+	maxIDLength = 128
 
 	ClaimStatusClaimed = "claimed"
 

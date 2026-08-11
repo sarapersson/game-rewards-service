@@ -194,15 +194,29 @@ func TestRewardClaimsHandlerRequiresJSONContentType(t *testing.T) {
 }
 
 func TestRewardClaimsHandlerAcceptsJSONContentTypeWithCharset(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(`{}`))
+	service := &recordingRewardClaimService{
+		result: rewards.CreateClaimResult{
+			StatusCode:   http.StatusCreated,
+			ResponseBody: []byte(`{}`),
+		},
+	}
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
 	req.Header.Set(headerIdempotencyKey, "claim-key-123")
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+	rewardClaimsHandler(service).ServeHTTP(rec, req)
 
-	if rec.Code == http.StatusUnsupportedMediaType {
-		t.Fatalf("status = %d, did not want unsupported media type", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	if !service.called {
+		t.Fatal("expected service to be called")
 	}
 }
 
@@ -237,70 +251,17 @@ func TestRewardClaimsHandlerRejectsInvalidJSONBody(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantCode:   errorCodeInvalidJSON,
 		},
-		{
-			name:       "missing player_id",
-			body:       `{"campaign_id":"campaign-123","reward_id":"reward-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "missing campaign_id",
-			body:       `{"player_id":"player-123","reward_id":"reward-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "missing reward_id",
-			body:       `{"player_id":"player-123","campaign_id":"campaign-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "player_id contains NUL",
-			body:       `{"player_id":"player\u0000one","campaign_id":"campaign-123","reward_id":"reward-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "campaign_id contains NUL",
-			body:       `{"player_id":"player-123","campaign_id":"campaign\u0000one","reward_id":"reward-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "reward_id contains NUL",
-			body:       `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward\u0000one"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "player_id too long",
-			body:       `{"player_id":"` + strings.Repeat("a", rewards.MaxIDLength+1) + `","campaign_id":"campaign-123","reward_id":"reward-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "campaign_id too long",
-			body:       `{"player_id":"player-123","campaign_id":"` + strings.Repeat("a", rewards.MaxIDLength+1) + `","reward_id":"reward-123"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
-		{
-			name:       "reward_id too long",
-			body:       `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"` + strings.Repeat("a", rewards.MaxIDLength+1) + `"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   errorCodeInvalidRequest,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			service := &recordingRewardClaimService{}
 			req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(tt.body))
 			req.Header.Set(headerIdempotencyKey, "claim-key-123")
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+			rewardClaimsHandler(service).ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
@@ -308,6 +269,93 @@ func TestRewardClaimsHandlerRejectsInvalidJSONBody(t *testing.T) {
 
 			if !strings.Contains(rec.Body.String(), tt.wantCode) {
 				t.Fatalf("response body = %q, want error code %q", rec.Body.String(), tt.wantCode)
+			}
+
+			if service.called {
+				t.Fatal("service was called for invalid JSON request body")
+			}
+		})
+	}
+}
+
+func TestRewardClaimsHandlerMapsClaimValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantMessage string
+	}{
+		{
+			name:        "missing player_id",
+			body:        `{"campaign_id":"campaign-123","reward_id":"reward-123"}`,
+			wantMessage: "player_id is required",
+		},
+		{
+			name:        "whitespace-only player_id",
+			body:        `{"player_id":"   ","campaign_id":"campaign-123","reward_id":"reward-123"}`,
+			wantMessage: "player_id is required",
+		},
+		{
+			name:        "missing campaign_id",
+			body:        `{"player_id":"player-123","reward_id":"reward-123"}`,
+			wantMessage: "campaign_id is required",
+		},
+		{
+			name:        "missing reward_id",
+			body:        `{"player_id":"player-123","campaign_id":"campaign-123"}`,
+			wantMessage: "reward_id is required",
+		},
+		{
+			name:        "player_id contains NUL",
+			body:        `{"player_id":"player\u0000one","campaign_id":"campaign-123","reward_id":"reward-123"}`,
+			wantMessage: "player_id must not contain NUL characters",
+		},
+		{
+			name:        "campaign_id contains NUL",
+			body:        `{"player_id":"player-123","campaign_id":"campaign\u0000one","reward_id":"reward-123"}`,
+			wantMessage: "campaign_id must not contain NUL characters",
+		},
+		{
+			name:        "reward_id contains NUL",
+			body:        `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward\u0000one"}`,
+			wantMessage: "reward_id must not contain NUL characters",
+		},
+		{
+			name:        "player_id too long",
+			body:        `{"player_id":"` + strings.Repeat("a", 129) + `","campaign_id":"campaign-123","reward_id":"reward-123"}`,
+			wantMessage: "player_id must be at most 128 characters",
+		},
+		{
+			name:        "campaign_id too long",
+			body:        `{"player_id":"player-123","campaign_id":"` + strings.Repeat("a", 129) + `","reward_id":"reward-123"}`,
+			wantMessage: "campaign_id must be at most 128 characters",
+		},
+		{
+			name:        "reward_id too long",
+			body:        `{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"` + strings.Repeat("a", 129) + `"}`,
+			wantMessage: "reward_id must be at most 128 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := rewards.NewService(nil)
+			req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(tt.body))
+			req.Header.Set(headerIdempotencyKey, "claim-key-123")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			rewardClaimsHandler(service).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			if !strings.Contains(rec.Body.String(), errorCodeInvalidRequest) {
+				t.Fatalf("response body = %q, want error code %q", rec.Body.String(), errorCodeInvalidRequest)
+			}
+
+			if !strings.Contains(rec.Body.String(), tt.wantMessage) {
+				t.Fatalf("response body = %q, want message %q", rec.Body.String(), tt.wantMessage)
 			}
 		})
 	}
@@ -419,16 +467,16 @@ func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 		t.Fatal("expected service to be called")
 	}
 
-	if service.cmd.PlayerID != "player-123" {
-		t.Fatalf("service player_id = %q, want %q", service.cmd.PlayerID, "player-123")
+	if service.cmd.PlayerID != " player-123 " {
+		t.Fatalf("service player_id = %q, want %q", service.cmd.PlayerID, " player-123 ")
 	}
 
-	if service.cmd.CampaignID != "campaign-123" {
-		t.Fatalf("service campaign_id = %q, want %q", service.cmd.CampaignID, "campaign-123")
+	if service.cmd.CampaignID != " campaign-123 " {
+		t.Fatalf("service campaign_id = %q, want %q", service.cmd.CampaignID, " campaign-123 ")
 	}
 
-	if service.cmd.RewardID != "reward-123" {
-		t.Fatalf("service reward_id = %q, want %q", service.cmd.RewardID, "reward-123")
+	if service.cmd.RewardID != " reward-123 " {
+		t.Fatalf("service reward_id = %q, want %q", service.cmd.RewardID, " reward-123 ")
 	}
 
 	if service.cmd.IdempotencyKey != "claim-key-123" {
@@ -702,6 +750,29 @@ func TestRewardClaimsHandlerObservesServiceOutcome(t *testing.T) {
 
 	if !observer.called || observer.result.StatusCode != http.StatusCreated || observer.err != nil {
 		t.Fatalf("unexpected observation: %#v", observer)
+	}
+}
+
+func TestRewardClaimsHandlerDoesNotObserveClaimValidation(t *testing.T) {
+	observer := &recordingRewardObserver{}
+	service := rewards.NewService(nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(service, observer).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	if observer.called {
+		t.Fatal("claim validation must not be recorded as a reward claim operation")
 	}
 }
 

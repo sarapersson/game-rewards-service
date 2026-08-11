@@ -1,9 +1,6 @@
 package rewards
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 var (
 	ErrDuplicateClaim        = errors.New("reward already claimed")
@@ -19,11 +16,7 @@ type ValidationError struct {
 }
 
 func (e ValidationError) Error() string {
-	if e.Field == "" {
-		return e.Message
-	}
-
-	return fmt.Sprintf("%s: %s", e.Field, e.Message)
+	return e.Message
 }
 
 func IsValidationError(err error) bool {

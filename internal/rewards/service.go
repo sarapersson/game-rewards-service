@@ -95,62 +95,42 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 }
 
 func validateCreateClaimCommand(cmd CreateClaimCommand) error {
-	if cmd.PlayerID == "" {
-		return ValidationError{Field: "player_id", Message: "player_id is required"}
+	if err := validateClaimID("player_id", cmd.PlayerID); err != nil {
+		return err
 	}
 
-	if strings.ContainsRune(cmd.PlayerID, '\x00') {
-		return ValidationError{
-			Field:   "player_id",
-			Message: "player_id must not contain NUL characters",
-		}
+	if err := validateClaimID("campaign_id", cmd.CampaignID); err != nil {
+		return err
 	}
 
-	if utf8.RuneCountInString(cmd.PlayerID) > MaxIDLength {
-		return ValidationError{
-			Field:   "player_id",
-			Message: fmt.Sprintf("player_id must be at most %d characters", MaxIDLength),
-		}
-	}
-
-	if cmd.CampaignID == "" {
-		return ValidationError{Field: "campaign_id", Message: "campaign_id is required"}
-	}
-
-	if strings.ContainsRune(cmd.CampaignID, '\x00') {
-		return ValidationError{
-			Field:   "campaign_id",
-			Message: "campaign_id must not contain NUL characters",
-		}
-	}
-
-	if utf8.RuneCountInString(cmd.CampaignID) > MaxIDLength {
-		return ValidationError{
-			Field:   "campaign_id",
-			Message: fmt.Sprintf("campaign_id must be at most %d characters", MaxIDLength),
-		}
-	}
-
-	if cmd.RewardID == "" {
-		return ValidationError{Field: "reward_id", Message: "reward_id is required"}
-	}
-
-	if strings.ContainsRune(cmd.RewardID, '\x00') {
-		return ValidationError{
-			Field:   "reward_id",
-			Message: "reward_id must not contain NUL characters",
-		}
-	}
-
-	if utf8.RuneCountInString(cmd.RewardID) > MaxIDLength {
-		return ValidationError{
-			Field:   "reward_id",
-			Message: fmt.Sprintf("reward_id must be at most %d characters", MaxIDLength),
-		}
+	if err := validateClaimID("reward_id", cmd.RewardID); err != nil {
+		return err
 	}
 
 	if cmd.IdempotencyKey == "" {
 		return ValidationError{Field: "idempotency_key", Message: "idempotency key is required"}
+	}
+
+	return nil
+}
+
+func validateClaimID(field, value string) error {
+	if value == "" {
+		return ValidationError{Field: field, Message: fmt.Sprintf("%s is required", field)}
+	}
+
+	if strings.ContainsRune(value, '\x00') {
+		return ValidationError{
+			Field:   field,
+			Message: fmt.Sprintf("%s must not contain NUL characters", field),
+		}
+	}
+
+	if utf8.RuneCountInString(value) > maxIDLength {
+		return ValidationError{
+			Field:   field,
+			Message: fmt.Sprintf("%s must be at most %d characters", field, maxIDLength),
+		}
 	}
 
 	return nil
