@@ -10,6 +10,8 @@ import (
 	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
+const serviceTestClaimID = "11111111-1111-4111-8111-111111111111"
+
 type fakeStore struct {
 	cmd    CreateClaimStoreCommand
 	result CreateClaimResult
@@ -44,7 +46,7 @@ func TestServiceCreateClaim(t *testing.T) {
 	store := &fakeStore{}
 
 	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return "claim-123", nil
+		return serviceTestClaimID, nil
 	})
 
 	result, err := service.CreateClaim(context.Background(), CreateClaimCommand{
@@ -73,8 +75,8 @@ func TestServiceCreateClaim(t *testing.T) {
 		t.Fatal("CreateClaim did not call store")
 	}
 
-	if store.cmd.Claim.ID != "claim-123" {
-		t.Fatalf("stored claim ID = %q, want %q", store.cmd.Claim.ID, "claim-123")
+	if store.cmd.Claim.ID != serviceTestClaimID {
+		t.Fatalf("stored claim ID = %q, want %q", store.cmd.Claim.ID, serviceTestClaimID)
 	}
 
 	if store.cmd.Claim.PlayerID != "player-123" {
@@ -120,16 +122,22 @@ func TestServiceCreateClaim(t *testing.T) {
 	}
 }
 
-func TestServiceCreateClaimReturnsStoreResultUnchanged(t *testing.T) {
+func TestServiceCreateClaimReturnsValidStoreResultUnchanged(t *testing.T) {
 	want := CreateClaimResult{
-		StatusCode:   CreateClaimStatusCreated,
-		ResponseBody: []byte(`{"claim_id":"claim-123"}`),
-		Replayed:     true,
+		StatusCode: CreateClaimStatusCreated,
+		ResponseBody: []byte(" \n{" +
+			`"claim_id":"` + serviceTestClaimID + `",` +
+			`"player_id":"player-123",` +
+			`"campaign_id":"campaign-123",` +
+			`"reward_id":"reward-123",` +
+			`"status":"claimed",` +
+			`"claimed_at":"2026-08-11T12:00:00Z"}` + "\t"),
+		Replayed: true,
 	}
 
 	store := &fakeStore{result: want}
 	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return "unused-claim-id", nil
+		return "22222222-2222-4222-8222-222222222222", nil
 	})
 
 	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
@@ -146,7 +154,30 @@ func TestServiceCreateClaimReturnsStoreResultUnchanged(t *testing.T) {
 	}
 
 	if !bytes.Equal(got.ResponseBody, want.ResponseBody) {
-		t.Fatalf("response body = %s, want %s", got.ResponseBody, want.ResponseBody)
+		t.Fatalf("response body = %q, want %q", got.ResponseBody, want.ResponseBody)
+	}
+}
+
+func TestServiceCreateClaimRejectsInvalidStoreResult(t *testing.T) {
+	store := &fakeStore{result: CreateClaimResult{
+		StatusCode:   CreateClaimStatusCreated,
+		ResponseBody: []byte(`{}`),
+	}}
+	service := NewServiceWithIDGenerator(store, func() (string, error) {
+		return serviceTestClaimID, nil
+	})
+
+	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
+	if err == nil {
+		t.Fatal("CreateClaim returned nil error, want internal error")
+	}
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("CreateClaim error = %v, want ErrInternal", err)
+	}
+
+	if got.StatusCode != 0 || got.ResponseBody != nil || got.Replayed {
+		t.Fatalf("CreateClaim result = %+v, want zero value", got)
 	}
 }
 
@@ -370,7 +401,7 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 	store := &fakeStore{}
 	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return "claim-123", nil
+		return serviceTestClaimID, nil
 	})
 	maxLengthID := strings.Repeat("å", maxIDLength)
 

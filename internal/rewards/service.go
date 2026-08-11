@@ -91,6 +91,10 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
 	}
 
+	if err := validateCreateClaimResult(result, claim); err != nil {
+		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
+	}
+
 	return result, nil
 }
 
