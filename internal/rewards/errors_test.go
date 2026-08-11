@@ -13,22 +13,22 @@ func TestIsValidationError(t *testing.T) {
 	}{
 		{
 			name: "value",
-			err:  ValidationError{Field: "player_id", Message: "is required"},
+			err:  ValidationError{Field: "player_id", Message: "player_id is required"},
 			want: true,
 		},
 		{
 			name: "pointer",
-			err:  &ValidationError{Field: "player_id", Message: "is required"},
+			err:  &ValidationError{Field: "player_id", Message: "player_id is required"},
 			want: true,
 		},
 		{
 			name: "wrapped value",
-			err:  fmt.Errorf("validate request: %w", ValidationError{Field: "player_id", Message: "is required"}),
+			err:  fmt.Errorf("validate request: %w", ValidationError{Field: "player_id", Message: "player_id is required"}),
 			want: true,
 		},
 		{
 			name: "wrapped pointer",
-			err:  fmt.Errorf("validate request: %w", &ValidationError{Field: "player_id", Message: "is required"}),
+			err:  fmt.Errorf("validate request: %w", &ValidationError{Field: "player_id", Message: "player_id is required"}),
 			want: true,
 		},
 		{
@@ -61,8 +61,8 @@ func TestValidationErrorError(t *testing.T) {
 	}{
 		{
 			name: "field and message",
-			err:  ValidationError{Field: "player_id", Message: "is required"},
-			want: "player_id: is required",
+			err:  ValidationError{Field: "player_id", Message: "player_id is required"},
+			want: "player_id is required",
 		},
 		{
 			name: "message only",

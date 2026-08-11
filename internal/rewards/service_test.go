@@ -152,9 +152,10 @@ func TestServiceCreateClaimReturnsStoreResultUnchanged(t *testing.T) {
 
 func TestServiceCreateClaimValidation(t *testing.T) {
 	tests := []struct {
-		name      string
-		cmd       CreateClaimCommand
-		wantField string
+		name        string
+		cmd         CreateClaimCommand
+		wantField   string
+		wantMessage string
 	}{
 		{
 			name: "missing player_id",
@@ -163,7 +164,19 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "player_id",
+			wantField:   "player_id",
+			wantMessage: "player_id is required",
+		},
+		{
+			name: "whitespace-only player_id",
+			cmd: CreateClaimCommand{
+				PlayerID:       "   ",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward-123",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField:   "player_id",
+			wantMessage: "player_id is required",
 		},
 		{
 			name: "missing campaign_id",
@@ -172,7 +185,19 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "campaign_id",
+			wantField:   "campaign_id",
+			wantMessage: "campaign_id is required",
+		},
+		{
+			name: "whitespace-only campaign_id",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "   ",
+				RewardID:       "reward-123",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField:   "campaign_id",
+			wantMessage: "campaign_id is required",
 		},
 		{
 			name: "missing reward_id",
@@ -181,7 +206,19 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				CampaignID:     "campaign-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "reward_id",
+			wantField:   "reward_id",
+			wantMessage: "reward_id is required",
+		},
+		{
+			name: "whitespace-only reward_id",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "campaign-123",
+				RewardID:       "   ",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField:   "reward_id",
+			wantMessage: "reward_id is required",
 		},
 		{
 			name: "player_id contains NUL",
@@ -191,7 +228,8 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "player_id",
+			wantField:   "player_id",
+			wantMessage: "player_id must not contain NUL characters",
 		},
 		{
 			name: "campaign_id contains NUL",
@@ -201,7 +239,8 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "campaign_id",
+			wantField:   "campaign_id",
+			wantMessage: "campaign_id must not contain NUL characters",
 		},
 		{
 			name: "reward_id contains NUL",
@@ -211,37 +250,41 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward\x00one",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "reward_id",
+			wantField:   "reward_id",
+			wantMessage: "reward_id must not contain NUL characters",
 		},
 		{
 			name: "player_id too long",
 			cmd: CreateClaimCommand{
-				PlayerID:       stringOfLength(MaxIDLength + 1),
+				PlayerID:       stringOfLength(maxIDLength + 1),
 				CampaignID:     "campaign-123",
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "player_id",
+			wantField:   "player_id",
+			wantMessage: "player_id must be at most 128 characters",
 		},
 		{
 			name: "campaign_id too long",
 			cmd: CreateClaimCommand{
 				PlayerID:       "player-123",
-				CampaignID:     stringOfLength(MaxIDLength + 1),
+				CampaignID:     stringOfLength(maxIDLength + 1),
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "campaign_id",
+			wantField:   "campaign_id",
+			wantMessage: "campaign_id must be at most 128 characters",
 		},
 		{
 			name: "reward_id too long",
 			cmd: CreateClaimCommand{
 				PlayerID:       "player-123",
 				CampaignID:     "campaign-123",
-				RewardID:       stringOfLength(MaxIDLength + 1),
+				RewardID:       stringOfLength(maxIDLength + 1),
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField: "reward_id",
+			wantField:   "reward_id",
+			wantMessage: "reward_id must be at most 128 characters",
 		},
 		{
 			name: "missing idempotency key",
@@ -250,7 +293,19 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				CampaignID: "campaign-123",
 				RewardID:   "reward-123",
 			},
-			wantField: "idempotency_key",
+			wantField:   "idempotency_key",
+			wantMessage: "idempotency key is required",
+		},
+		{
+			name: "whitespace-only idempotency key",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward-123",
+				IdempotencyKey: "   ",
+			},
+			wantField:   "idempotency_key",
+			wantMessage: "idempotency key is required",
 		},
 		{
 			name: "invalid idempotency key",
@@ -260,7 +315,8 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim\nkey",
 			},
-			wantField: "idempotency_key",
+			wantField:   "idempotency_key",
+			wantMessage: "idempotency key is invalid",
 		},
 	}
 
@@ -292,6 +348,14 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				t.Fatalf("ValidationError.Field = %q, want %q", validationErr.Field, tt.wantField)
 			}
 
+			if validationErr.Message != tt.wantMessage {
+				t.Fatalf("ValidationError.Message = %q, want %q", validationErr.Message, tt.wantMessage)
+			}
+
+			if err.Error() != tt.wantMessage {
+				t.Fatalf("CreateClaim error = %q, want %q", err.Error(), tt.wantMessage)
+			}
+
 			if idCalled {
 				t.Fatal("ID generator was called for invalid command")
 			}
@@ -308,21 +372,21 @@ func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 	service := NewServiceWithIDGenerator(store, func() (string, error) {
 		return "claim-123", nil
 	})
+	maxLengthID := strings.Repeat("å", maxIDLength)
 
-	playerID := strings.Repeat("å", MaxIDLength)
-
-	_, err := service.CreateClaim(context.Background(), CreateClaimCommand{
-		PlayerID:       playerID,
-		CampaignID:     "campaign-123",
-		RewardID:       "reward-123",
+	if _, err := service.CreateClaim(context.Background(), CreateClaimCommand{
+		PlayerID:       maxLengthID,
+		CampaignID:     maxLengthID,
+		RewardID:       maxLengthID,
 		IdempotencyKey: "claim-key-123",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("CreateClaim returned error: %v", err)
 	}
 
-	if store.cmd.Claim.PlayerID != playerID {
-		t.Fatalf("stored player ID length = %d runes, want %d", len([]rune(store.cmd.Claim.PlayerID)), MaxIDLength)
+	if store.cmd.Claim.PlayerID != maxLengthID ||
+		store.cmd.Claim.CampaignID != maxLengthID ||
+		store.cmd.Claim.RewardID != maxLengthID {
+		t.Fatalf("stored claim identifiers do not preserve %d-character multibyte values", maxIDLength)
 	}
 }
 
