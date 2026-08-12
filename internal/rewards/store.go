@@ -35,6 +35,8 @@ const (
 	idempotencyStateCompleted  = "completed"
 )
 
+var errPostgresQueryTimeout = errors.New("postgres reward claim query timeout")
+
 type PostgresStore struct {
 	pool         *pgxpool.Pool
 	queryTimeout time.Duration
@@ -53,7 +55,7 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 
 	tx, err := s.pool.BeginTx(queryCtx, pgx.TxOptions{})
 	if err != nil {
-		return CreateClaimResult{}, mapPostgresError(err)
+		return CreateClaimResult{}, mapPostgresError(queryCtx, err)
 	}
 	defer s.rollbackTransaction(tx)
 
@@ -69,7 +71,7 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 		}
 
 		if err := tx.Commit(queryCtx); err != nil {
-			return CreateClaimResult{}, mapPostgresError(err)
+			return CreateClaimResult{}, mapPostgresError(queryCtx, err)
 		}
 
 		return result, nil
@@ -84,7 +86,7 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 			}
 
 			if err := tx.Commit(queryCtx); err != nil {
-				return CreateClaimResult{}, mapPostgresError(err)
+				return CreateClaimResult{}, mapPostgresError(queryCtx, err)
 			}
 
 			return result, nil
@@ -99,7 +101,7 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 	}
 
 	if err := tx.Commit(queryCtx); err != nil {
-		return CreateClaimResult{}, mapPostgresError(err)
+		return CreateClaimResult{}, mapPostgresError(queryCtx, err)
 	}
 
 	return result, nil
@@ -122,7 +124,7 @@ func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, cont
 		return nil, nil, fmt.Errorf("reward claims store query timeout must be greater than zero: %w", ErrInternal)
 	}
 
-	queryCtx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	queryCtx, cancel := context.WithTimeoutCause(ctx, s.queryTimeout, errPostgresQueryTimeout)
 	return queryCtx, cancel, nil
 }
 
@@ -148,7 +150,7 @@ RETURNING state`
 			return false, nil
 		}
 
-		return false, mapPostgresError(err)
+		return false, mapPostgresError(ctx, err)
 	}
 
 	return true, nil
@@ -175,7 +177,7 @@ FOR UPDATE`
 		&responseBody,
 	)
 	if err != nil {
-		return CreateClaimResult{}, mapPostgresError(err)
+		return CreateClaimResult{}, mapPostgresError(ctx, err)
 	}
 
 	if !bytes.Equal(requestHash, cmd.RequestHash) {
@@ -247,7 +249,7 @@ VALUES ($1, $2, $3, $4, $5::jsonb, $6)`
 		outboxStatusPending,
 	)
 	if err != nil {
-		return mapPostgresError(err)
+		return mapPostgresError(ctx, err)
 	}
 
 	return nil
@@ -303,7 +305,7 @@ WHERE operation = $1
 		idempotencyStateProcessing,
 	)
 	if err != nil {
-		return mapPostgresError(err)
+		return mapPostgresError(ctx, err)
 	}
 
 	if tag.RowsAffected() != 1 {
@@ -348,21 +350,13 @@ RETURNING id::text, player_id, campaign_id, reward_id, status, created_at, updat
 			return Claim{}, ErrDuplicateClaim
 		}
 
-		return Claim{}, mapPostgresError(err)
+		return Claim{}, mapPostgresError(ctx, err)
 	}
 
 	return created, nil
 }
 
-func mapPostgresError(err error) error {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return fmt.Errorf("postgres reward claim operation: %w", ErrUnavailable)
-	}
-
-	if errors.Is(err, pgconn.ErrConnClosed) || pgconn.Timeout(err) || isNetworkUnavailableError(err) {
-		return fmt.Errorf("postgres reward claim operation: %w", ErrUnavailable)
-	}
-
+func mapPostgresError(ctx context.Context, err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		if pgErr.Code == postgresSQLStateUniqueViolation && pgErr.ConstraintName == rewardClaimsPlayerCampaignRewardConstraint {
@@ -378,6 +372,18 @@ func mapPostgresError(err error) error {
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("postgres reward claim operation returned no row: %w", ErrInternal)
+	}
+
+	if ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		if errors.Is(context.Cause(ctx), errPostgresQueryTimeout) {
+			return fmt.Errorf("postgres reward claim operation: %w", ErrUnavailable)
+		}
+
+		return ctx.Err()
+	}
+
+	if errors.Is(err, pgconn.ErrConnClosed) || pgconn.Timeout(err) || isNetworkUnavailableError(err) {
+		return fmt.Errorf("postgres reward claim operation: %w", ErrUnavailable)
 	}
 
 	return fmt.Errorf("postgres reward claim operation: %w", ErrInternal)

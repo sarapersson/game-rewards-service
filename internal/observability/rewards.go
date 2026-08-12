@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -56,6 +57,9 @@ func (m *RewardMetrics) ObserveRewardClaim(result rewards.CreateClaimResult, err
 		m.idempotency.WithLabelValues("in_progress").Inc()
 	case rewards.IsValidationError(err):
 		m.claims.WithLabelValues("invalid").Inc()
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		m.claims.WithLabelValues("canceled").Inc()
+		m.idempotency.WithLabelValues("canceled").Inc()
 	case errors.Is(err, rewards.ErrUnavailable):
 		m.claims.WithLabelValues("unavailable").Inc()
 		m.idempotency.WithLabelValues("failed").Inc()

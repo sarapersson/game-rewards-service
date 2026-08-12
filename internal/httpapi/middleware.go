@@ -112,6 +112,11 @@ func requestLogger(logger *slog.Logger, observers ...RequestObserver) func(http.
 
 			next.ServeHTTP(rec, r)
 
+			if !rec.wroteHeader && r.Context().Err() != nil {
+				// No response was written after the request context ended; do not report an implicit 200.
+				rec.status = 0
+			}
+
 			duration := time.Since(started)
 			route := routeName(r)
 			for _, observer := range observers {

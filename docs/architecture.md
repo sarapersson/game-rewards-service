@@ -85,7 +85,7 @@ Shutdown cancellation is not persisted as a publisher failure: attempts are not 
 
 ## Failure classification
 
-Only explicitly recognized PostgreSQL availability failures are mapped to `503 service_unavailable`.
+Only explicitly recognized PostgreSQL availability failures are mapped to `503 service_unavailable`. Caller cancellation and caller deadlines remain standard context errors and are not reclassified as dependency failures.
 
 Schema, invariant, authentication, protocol, concurrency-control, and other unexpected database failures remain internal unless a specific domain mapping applies.
 

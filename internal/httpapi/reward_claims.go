@@ -101,6 +101,10 @@ func rewardClaimsHandlerWithLogger(
 			}
 		}
 		if err != nil {
+			if isRequestContextError(r, err) {
+				return
+			}
+
 			logCreateClaimError(r, logger, err)
 			writeCreateClaimError(w, err)
 			return
@@ -112,6 +116,11 @@ func rewardClaimsHandlerWithLogger(
 
 		writeRawJSON(w, result.StatusCode, result.ResponseBody)
 	}
+}
+
+func isRequestContextError(r *http.Request, err error) bool {
+	ctxErr := r.Context().Err()
+	return ctxErr != nil && errors.Is(err, ctxErr)
 }
 
 var errMissingIdempotencyKey = rewardClaimValidationError("missing idempotency key")
