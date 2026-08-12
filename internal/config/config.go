@@ -83,26 +83,33 @@ func Load() (Config, error) {
 type lookupFunc func(string) (string, bool)
 
 func loadWithLookup(lookup lookupFunc) (Config, error) {
-	cfg := Config{
-		AppEnv:      getString(lookup, "APP_ENV", defaultAppEnv),
-		ServiceName: getString(lookup, "SERVICE_NAME", defaultServiceName),
-		HTTP: HTTPConfig{
-			Addr: getString(lookup, "HTTP_ADDR", defaultHTTPAddr),
-		},
-		Database: DatabaseConfig{
-			URL: getString(lookup, "DATABASE_URL", defaultDatabaseURL),
-		},
-		Worker: WorkerConfig{
-			AdminAddr:   getString(lookup, "WORKER_ADMIN_ADDR", defaultWorkerAdminAddr),
-			MaxAttempts: defaultOutboxMaxAttempts,
-		},
-		ShutdownTimeout: defaultShutdownTimeout,
-		Log: LogConfig{
-			Level: defaultLogLevel,
-		},
+	var cfg Config
+	var err error
+
+	cfg.AppEnv, err = getString(lookup, "APP_ENV", defaultAppEnv)
+	if err != nil {
+		return Config{}, err
 	}
 
-	var err error
+	cfg.ServiceName, err = getString(lookup, "SERVICE_NAME", defaultServiceName)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.HTTP.Addr, err = getString(lookup, "HTTP_ADDR", defaultHTTPAddr)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Database.URL, err = getString(lookup, "DATABASE_URL", defaultDatabaseURL)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Worker.AdminAddr, err = getString(lookup, "WORKER_ADMIN_ADDR", defaultWorkerAdminAddr)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg.HTTP.ReadTimeout, err = getDuration(lookup, "HTTP_READ_TIMEOUT", defaultHTTPReadTimeout)
 	if err != nil {
@@ -181,22 +188,32 @@ func loadWithLookup(lookup lookupFunc) (Config, error) {
 	return cfg, nil
 }
 
-func getString(lookup lookupFunc, key string, defaultValue string) string {
+func getString(lookup lookupFunc, key string, defaultValue string) (string, error) {
 	value, ok := lookup(key)
-	if !ok || strings.TrimSpace(value) == "" {
-		return defaultValue
+	if !ok {
+		return defaultValue, nil
 	}
 
-	return strings.TrimSpace(value)
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("invalid %s: must not be empty", key)
+	}
+
+	return value, nil
 }
 
 func getDuration(lookup lookupFunc, key string, defaultValue time.Duration) (time.Duration, error) {
 	value, ok := lookup(key)
-	if !ok || strings.TrimSpace(value) == "" {
+	if !ok {
 		return defaultValue, nil
 	}
 
-	duration, err := time.ParseDuration(strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("invalid %s: must not be empty", key)
+	}
+
+	duration, err := time.ParseDuration(value)
 	if err != nil {
 		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
@@ -210,11 +227,16 @@ func getDuration(lookup lookupFunc, key string, defaultValue time.Duration) (tim
 
 func getInt(lookup lookupFunc, key string, defaultValue int) (int, error) {
 	value, ok := lookup(key)
-	if !ok || strings.TrimSpace(value) == "" {
+	if !ok {
 		return defaultValue, nil
 	}
 
-	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("invalid %s: must not be empty", key)
+	}
+
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
@@ -228,11 +250,16 @@ func getInt(lookup lookupFunc, key string, defaultValue int) (int, error) {
 
 func getLogLevel(lookup lookupFunc, key string, defaultValue slog.Level) (slog.Level, error) {
 	value, ok := lookup(key)
-	if !ok || strings.TrimSpace(value) == "" {
+	if !ok {
 		return defaultValue, nil
 	}
 
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("invalid %s: must not be empty", key)
+	}
+
+	switch strings.ToLower(value) {
 	case "debug":
 		return slog.LevelDebug, nil
 	case "info":
@@ -247,26 +274,6 @@ func getLogLevel(lookup lookupFunc, key string, defaultValue slog.Level) (slog.L
 }
 
 func validate(cfg Config) error {
-	if strings.TrimSpace(cfg.AppEnv) == "" {
-		return fmt.Errorf("APP_ENV must not be empty")
-	}
-
-	if strings.TrimSpace(cfg.ServiceName) == "" {
-		return fmt.Errorf("SERVICE_NAME must not be empty")
-	}
-
-	if strings.TrimSpace(cfg.HTTP.Addr) == "" {
-		return fmt.Errorf("HTTP_ADDR must not be empty")
-	}
-
-	if strings.TrimSpace(cfg.Database.URL) == "" {
-		return fmt.Errorf("DATABASE_URL must not be empty")
-	}
-
-	if strings.TrimSpace(cfg.Worker.AdminAddr) == "" {
-		return fmt.Errorf("WORKER_ADMIN_ADDR must not be empty")
-	}
-
 	if cfg.Worker.OutboxLockTTL <= cfg.Worker.PublishTimeout {
 		return fmt.Errorf(
 			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",

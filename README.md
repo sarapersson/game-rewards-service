@@ -194,7 +194,7 @@ In another terminal:
 make run-worker
 ```
 
-Runtime configuration is environment-based. Defaults and supported variables are documented in [`.env.example`](.env.example). Local Compose credentials are development-only.
+Runtime configuration is environment-based. Unset variables use defaults, while explicitly blank overrides are rejected at startup. Defaults and supported variables are documented in [`.env.example`](.env.example). Local Compose credentials are development-only.
 
 ## Documentation
 

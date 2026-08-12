@@ -193,41 +193,41 @@ func TestLoadWithLookupUsesEnvironmentOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadWithLookupFallsBackForBlankValues(t *testing.T) {
-	cfg, err := loadWithLookup(mapLookup(map[string]string{
-		"APP_ENV":           "   ",
-		"SERVICE_NAME":      "",
-		"HTTP_ADDR":         "\t",
-		"WORKER_ADMIN_ADDR": " ",
-		"DATABASE_URL":      "",
-		"LOG_LEVEL":         "",
-	}))
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+func TestLoadWithLookupRejectsBlankOverrides(t *testing.T) {
+	keys := []string{
+		"APP_ENV",
+		"SERVICE_NAME",
+		"HTTP_ADDR",
+		"HTTP_READ_TIMEOUT",
+		"HTTP_READ_HEADER_TIMEOUT",
+		"HTTP_WRITE_TIMEOUT",
+		"HTTP_IDLE_TIMEOUT",
+		"DATABASE_URL",
+		"DB_PING_TIMEOUT",
+		"DB_QUERY_TIMEOUT",
+		"WORKER_ADMIN_ADDR",
+		"WORKER_POLL_INTERVAL",
+		"OUTBOX_LOCK_TTL",
+		"OUTBOX_PUBLISH_TIMEOUT",
+		"OUTBOX_MAX_ATTEMPTS",
+		"OUTBOX_BASE_BACKOFF",
+		"OUTBOX_MAX_BACKOFF",
+		"SHUTDOWN_TIMEOUT",
+		"LOG_LEVEL",
 	}
 
-	if cfg.AppEnv != "local" {
-		t.Fatalf("expected blank APP_ENV to fall back to default, got %q", cfg.AppEnv)
-	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			_, err := loadWithLookup(mapLookup(map[string]string{key: " \t "}))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
 
-	if cfg.ServiceName != "game-rewards-service" {
-		t.Fatalf("expected blank SERVICE_NAME to fall back to default, got %q", cfg.ServiceName)
-	}
-
-	if cfg.HTTP.Addr != ":8080" {
-		t.Fatalf("expected blank HTTP_ADDR to fall back to default, got %q", cfg.HTTP.Addr)
-	}
-
-	if cfg.Worker.AdminAddr != ":8081" {
-		t.Fatalf("expected blank WORKER_ADMIN_ADDR to fall back to default, got %q", cfg.Worker.AdminAddr)
-	}
-
-	if cfg.Database.URL != "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable" {
-		t.Fatalf("expected blank DATABASE_URL to fall back to default, got %q", cfg.Database.URL)
-	}
-
-	if cfg.Log.Level != slog.LevelInfo {
-		t.Fatalf("expected blank LOG_LEVEL to fall back to default, got %s", cfg.Log.Level)
+			want := "invalid " + key + ": must not be empty"
+			if err.Error() != want {
+				t.Fatalf("expected %q, got %q", want, err.Error())
+			}
+		})
 	}
 }
 
