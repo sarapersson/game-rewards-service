@@ -1,7 +1,9 @@
 package observability
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,6 +171,30 @@ func TestRewardMetricsRecordDistinctIdempotencyOutcomes(t *testing.T) {
 	}
 	if strings.Contains(got, "database credentials") {
 		t.Fatal("metrics exposed raw error")
+	}
+}
+
+func TestRewardMetricsRecordEndedRequestContext(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := NewRewardMetrics(registry)
+	if err != nil {
+		t.Fatalf("register metrics: %v", err)
+	}
+
+	metrics.ObserveRewardClaim(rewards.CreateClaimResult{}, fmt.Errorf("create reward claim: %w", context.Canceled))
+	metrics.ObserveRewardClaim(rewards.CreateClaimResult{}, context.DeadlineExceeded)
+	got := scrape(t, registry)
+
+	for _, want := range []string{
+		`game_rewards_reward_claim_operations_total{outcome="canceled"} 2`,
+		`game_rewards_idempotency_operations_total{outcome="canceled"} 2`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("want %q in metrics:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `outcome="unavailable"`) || strings.Contains(got, `outcome="internal_error"`) {
+		t.Fatalf("ended request context was misclassified:\n%s", got)
 	}
 }
 

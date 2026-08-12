@@ -594,6 +594,12 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 			wantCode:   errorCodeInternal,
 		},
 		{
+			name:       "context error without ended request context",
+			err:        context.Canceled,
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   errorCodeInternal,
+		},
+		{
 			name:       "unknown",
 			err:        errors.New("unexpected failure"),
 			wantStatus: http.StatusInternalServerError,
@@ -634,6 +640,40 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 				t.Fatalf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
 			}
 		})
+	}
+}
+
+func TestRewardClaimsHandlerDoesNotWriteAfterRequestCancellation(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	service := &recordingRewardClaimService{err: fmt.Errorf("create reward claim: %w", context.Canceled)}
+	observer := &recordingRewardObserver{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	).WithContext(ctx)
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandlerWithLogger(logger, service, observer).ServeHTTP(rec, req)
+
+	if rec.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want no response body", rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("Content-Type = %q, want no response", got)
+	}
+	if !observer.called || !errors.Is(observer.err, context.Canceled) {
+		t.Fatalf("unexpected observation: %#v", observer)
+	}
+	if strings.Contains(logs.String(), "reward claim request failed") {
+		t.Fatalf("request cancellation was logged as a claim failure: %s", logs.String())
 	}
 }
 

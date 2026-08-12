@@ -91,6 +91,56 @@ WHERE player_id = $1
 	}
 }
 
+func TestPostgresStoreCreateClaimPreservesCanceledCaller(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	testName := integrationTestName(t)
+	cmd := newIntegrationCreateClaimCommand(
+		t,
+		"claim-key-"+testName,
+		"player-"+testName,
+		"campaign-"+testName,
+		"reward-"+testName,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := store.CreateClaim(ctx, cmd)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateClaim error = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Fatalf("CreateClaim error = %v, did not want ErrUnavailable", err)
+	}
+}
+
+func TestPostgresStoreCreateClaimPreservesExpiredCallerDeadline(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := NewPostgresStore(pool, 2*time.Second)
+
+	testName := integrationTestName(t)
+	cmd := newIntegrationCreateClaimCommand(
+		t,
+		"claim-key-"+testName,
+		"player-"+testName,
+		"campaign-"+testName,
+		"reward-"+testName,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+
+	_, err := store.CreateClaim(ctx, cmd)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CreateClaim error = %v, want context.DeadlineExceeded", err)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Fatalf("CreateClaim error = %v, did not want ErrUnavailable", err)
+	}
+}
+
 func TestPostgresStoreCreateClaimRejectsInvalidQueryTimeout(t *testing.T) {
 	pool := openIntegrationPool(t)
 	store := NewPostgresStore(pool, 0)

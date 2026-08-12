@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type rollbackTestTx struct {
@@ -68,7 +69,7 @@ func TestPostgresStoreRollbackTransactionIsBounded(t *testing.T) {
 }
 
 func TestMapPostgresErrorDuplicateClaim(t *testing.T) {
-	err := mapPostgresError(&pgconn.PgError{
+	err := mapPostgresError(context.Background(), &pgconn.PgError{
 		Code:           postgresSQLStateUniqueViolation,
 		ConstraintName: rewardClaimsPlayerCampaignRewardConstraint,
 	})
@@ -89,7 +90,7 @@ func TestMapPostgresErrorDuplicateClaim(t *testing.T) {
 func TestMapPostgresErrorUniqueViolationForDifferentConstraint(t *testing.T) {
 	const sensitiveMessage = "connection failed with password super-secret"
 
-	err := mapPostgresError(&pgconn.PgError{
+	err := mapPostgresError(context.Background(), &pgconn.PgError{
 		Code:           postgresSQLStateUniqueViolation,
 		ConstraintName: "some_other_constraint",
 		Message:        sensitiveMessage,
@@ -118,16 +119,12 @@ func TestMapPostgresErrorUnavailable(t *testing.T) {
 		err  error
 	}{
 		{
-			name: "deadline exceeded",
+			name: "driver deadline exceeded",
 			err:  context.DeadlineExceeded,
 		},
 		{
-			name: "wrapped deadline exceeded",
+			name: "wrapped driver deadline exceeded",
 			err:  fmt.Errorf("query failed: %w", context.DeadlineExceeded),
-		},
-		{
-			name: "context canceled",
-			err:  context.Canceled,
 		},
 		{
 			name: "connection closed",
@@ -161,7 +158,7 @@ func TestMapPostgresErrorUnavailable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mapPostgresError(tt.err)
+			err := mapPostgresError(context.Background(), tt.err)
 
 			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("mapPostgresError() = %v, want ErrUnavailable", err)
@@ -175,6 +172,73 @@ func TestMapPostgresErrorUnavailable(t *testing.T) {
 				t.Fatalf("mapPostgresError() = %v, did not want ErrDuplicateClaim", err)
 			}
 		})
+	}
+}
+
+func TestMapPostgresErrorPreservesCallerContext(t *testing.T) {
+	canceledCtx, cancelCaller := context.WithCancel(context.Background())
+	cancelCaller()
+
+	deadlineCtx, cancelDeadline := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancelDeadline()
+
+	tests := []struct {
+		name   string
+		parent context.Context
+		want   error
+	}{
+		{name: "caller canceled", parent: canceledCtx, want: context.Canceled},
+		{name: "caller deadline exceeded", parent: deadlineCtx, want: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queryCtx, cancelQuery := context.WithTimeoutCause(tt.parent, time.Minute, errPostgresQueryTimeout)
+			defer cancelQuery()
+			<-queryCtx.Done()
+
+			err := mapPostgresError(queryCtx, fmt.Errorf("query failed: %w", queryCtx.Err()))
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("mapPostgresError() = %v, want %v", err, tt.want)
+			}
+			if errors.Is(err, ErrUnavailable) {
+				t.Fatalf("mapPostgresError() = %v, did not want ErrUnavailable", err)
+			}
+			if errors.Is(err, ErrInternal) {
+				t.Fatalf("mapPostgresError() = %v, did not want ErrInternal", err)
+			}
+		})
+	}
+}
+
+func TestMapPostgresErrorDoesNotOverrideConcreteFailureWithLateCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := mapPostgresError(ctx, pgconn.ErrConnClosed)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("mapPostgresError() = %v, want ErrUnavailable", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("mapPostgresError() = %v, did not want late caller cancellation", err)
+	}
+}
+
+func TestMapPostgresErrorMapsStoreQueryTimeoutToUnavailable(t *testing.T) {
+	store := NewPostgresStore(new(pgxpool.Pool), time.Nanosecond)
+	queryCtx, cancel, err := store.queryContext(context.Background())
+	if err != nil {
+		t.Fatalf("queryContext() error = %v", err)
+	}
+	defer cancel()
+	<-queryCtx.Done()
+
+	err = mapPostgresError(queryCtx, queryCtx.Err())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("mapPostgresError() = %v, want ErrUnavailable", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("mapPostgresError() = %v, did not want caller deadline", err)
 	}
 }
 
@@ -198,7 +262,7 @@ func TestMapPostgresErrorUnavailableSQLStates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pgErr := &pgconn.PgError{Code: tt.code, Message: "sensitive postgres detail"}
-			err := mapPostgresError(fmt.Errorf("wrapped postgres error: %w", pgErr))
+			err := mapPostgresError(context.Background(), fmt.Errorf("wrapped postgres error: %w", pgErr))
 
 			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("mapPostgresError() = %v, want ErrUnavailable", err)
@@ -220,6 +284,10 @@ func TestMapPostgresErrorInternal(t *testing.T) {
 		name string
 		err  error
 	}{
+		{
+			name: "context canceled without canceled query context",
+			err:  context.Canceled,
+		},
 		{
 			name: "no rows",
 			err:  pgx.ErrNoRows,
@@ -267,7 +335,7 @@ func TestMapPostgresErrorInternal(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mapPostgresError(tt.err)
+			err := mapPostgresError(context.Background(), tt.err)
 
 			if !errors.Is(err, ErrInternal) {
 				t.Fatalf("mapPostgresError() = %v, want ErrInternal", err)
@@ -287,7 +355,7 @@ func TestMapPostgresErrorInternal(t *testing.T) {
 func TestMapPostgresErrorSanitizesNetworkDetails(t *testing.T) {
 	const sensitiveMessage = "internal-db.example:5432 super-secret"
 
-	err := mapPostgresError(&net.OpError{
+	err := mapPostgresError(context.Background(), &net.OpError{
 		Op:  "dial",
 		Net: "tcp",
 		Err: errors.New(sensitiveMessage),

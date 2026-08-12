@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -187,6 +188,22 @@ func TestMiddlewareObservesBoundedRouteAndStatus(t *testing.T) {
 	}
 	if observer.duration < 0 {
 		t.Fatalf("duration = %s", observer.duration)
+	}
+}
+
+func TestMiddlewareDoesNotReportCanceledRequestAsOK(t *testing.T) {
+	observer := &recordingRequestObserver{}
+	handler := withMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), testLogger(), observer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, routeRewardClaims, nil).WithContext(ctx)
+	handler.ServeHTTP(recorder, request)
+
+	if observer.route != routeRewardClaims || observer.method != http.MethodPost || observer.status != 0 {
+		t.Fatalf("unexpected observation: %#v", observer)
 	}
 }
 
