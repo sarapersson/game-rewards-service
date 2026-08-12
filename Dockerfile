@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
-FROM golang:1.26.5-trixie AS build
+FROM golang:1.26.5-trixie@sha256:98988b42f3293b627bf07c884ff17181a59501769cd8c06c7ba901e0ce2c9853 AS build
 
 ENV GOTOOLCHAIN=local
 
@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 go build \
     -o /out/worker \
     ./cmd/worker
 
-FROM debian:13-slim AS runtime
+FROM debian:13-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS runtime
 
 ENV HTTP_ADDR=:8080 \
     WORKER_ADMIN_ADDR=:8081
