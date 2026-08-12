@@ -13,7 +13,7 @@ import (
 const (
 	defaultAppEnv                = "local"
 	defaultServiceName           = "game-rewards-service"
-	defaultHTTPAddr              = ":8080"
+	defaultHTTPAddr              = "127.0.0.1:8080"
 	defaultHTTPReadTimeout       = 5 * time.Second
 	defaultHTTPReadHeaderTimeout = 2 * time.Second
 	defaultHTTPWriteTimeout      = 10 * time.Second
@@ -23,7 +23,7 @@ const (
 	defaultDatabaseURL           = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 	defaultDBPingTimeout         = 2 * time.Second
 	defaultDBQueryTimeout        = 2 * time.Second
-	defaultWorkerAdminAddr       = ":8081"
+	defaultWorkerAdminAddr       = "127.0.0.1:8081"
 	defaultWorkerPollInterval    = 1 * time.Second
 	defaultOutboxLockTTL         = 30 * time.Second
 	defaultOutboxPublishTimeout  = 5 * time.Second

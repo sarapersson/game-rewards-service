@@ -21,8 +21,8 @@ func TestLoadWithLookupUsesDefaults(t *testing.T) {
 		t.Fatalf("expected default service name, got %q", cfg.ServiceName)
 	}
 
-	if cfg.HTTP.Addr != ":8080" {
-		t.Fatalf("expected default HTTP addr :8080, got %q", cfg.HTTP.Addr)
+	if cfg.HTTP.Addr != "127.0.0.1:8080" {
+		t.Fatalf("expected default HTTP addr 127.0.0.1:8080, got %q", cfg.HTTP.Addr)
 	}
 
 	if cfg.HTTP.ReadTimeout != 5*time.Second {
@@ -53,8 +53,8 @@ func TestLoadWithLookupUsesDefaults(t *testing.T) {
 		t.Fatalf("expected database query timeout 2s, got %s", cfg.Database.QueryTimeout)
 	}
 
-	if cfg.Worker.AdminAddr != ":8081" {
-		t.Fatalf("expected worker admin addr :8081, got %q", cfg.Worker.AdminAddr)
+	if cfg.Worker.AdminAddr != "127.0.0.1:8081" {
+		t.Fatalf("expected default worker admin addr 127.0.0.1:8081, got %q", cfg.Worker.AdminAddr)
 	}
 
 	if cfg.Worker.PollInterval != time.Second {

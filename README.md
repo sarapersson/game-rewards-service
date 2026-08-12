@@ -147,7 +147,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the system flow, reliabil
 
 ## Observability
 
-The API listens on `:8080` and the worker admin server on `:8081` by default.
+Direct local runs bind the API to `127.0.0.1:8080` and the worker admin server to `127.0.0.1:8081` by default. The container image uses wildcard listeners so published container ports remain reachable; local Compose publishes those ports only on host loopback.
 
 | Process | `/livez`         | `/readyz`                       | `/metrics`                                  |
 | ------- | ---------------- | ------------------------------- | ------------------------------------------- |
@@ -194,7 +194,7 @@ In another terminal:
 make run-worker
 ```
 
-Runtime configuration is environment-based. Unset variables use defaults, while explicitly blank overrides are rejected at startup. Defaults and supported variables are documented in [`.env.example`](.env.example). Local Compose credentials are development-only.
+Runtime configuration is environment-based. Unset variables use defaults, while explicitly blank overrides are rejected at startup. Direct process defaults keep HTTP listeners on loopback; set `HTTP_ADDR` or `WORKER_ADMIN_ADDR` explicitly when another bind address is required. Defaults and supported variables are documented in [`.env.example`](.env.example). Local Compose credentials are development-only.
 
 ## Documentation
 
