@@ -29,7 +29,7 @@ The service does **not** implement authentication or authorization, rate limitin
 * HTTP, database, publisher, and shutdown operations use explicit timeouts.
 * API shutdown force-closes remaining HTTP connections after the graceful timeout, and reward-claim transaction rollback uses an independent bounded cleanup context.
 * Worker publishing uses leases and ownership-fenced finalization; no database transaction or row lock is held while the publisher executes.
-* Docker runs as a non-root user with versioned base images, and local Compose ports bind to `127.0.0.1`.
+* Docker runs as a non-root user with versioned base images. Direct local listener defaults bind to `127.0.0.1`, and local Compose publishes ports only on `127.0.0.1`.
 * GitHub Actions use least-privilege permissions and `persist-credentials: false`, and run formatting, vet, tests, race tests, migration/integration checks, Docker builds, CodeQL, and `govulncheck`.
 * Dependabot covers Go modules, GitHub Actions, Dockerfiles, and Docker Compose.
 
@@ -51,7 +51,7 @@ The local PostgreSQL credentials in `compose.yaml` and `.env.example` are develo
 
 ## Health and metrics exposure
 
-The API and worker expose `/livez`, `/readyz`, and `/metrics` on their respective listeners. Local Compose binds these listeners to localhost.
+The API and worker expose `/livez`, `/readyz`, and `/metrics` on their respective listeners. Direct local runs bind them to localhost by default, and local Compose likewise publishes them only on host loopback.
 
 A production adaptation should restrict health and metrics access through private networking, firewall or ingress rules, or an observability proxy as appropriate. The service does not implement a separate metrics-authentication mechanism.
 

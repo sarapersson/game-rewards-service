@@ -26,6 +26,9 @@ RUN CGO_ENABLED=0 go build \
 
 FROM debian:13-slim AS runtime
 
+ENV HTTP_ADDR=:8080 \
+    WORKER_ADMIN_ADDR=:8081
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/* && \
