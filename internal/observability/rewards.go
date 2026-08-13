@@ -52,9 +52,6 @@ func (m *RewardMetrics) ObserveRewardClaim(result rewards.CreateClaimResult, err
 	case errors.Is(err, rewards.ErrIdempotencyKeyReused):
 		m.claims.WithLabelValues("idempotency_key_reused").Inc()
 		m.idempotency.WithLabelValues("key_reused").Inc()
-	case errors.Is(err, rewards.ErrIdempotencyInProgress):
-		m.claims.WithLabelValues("idempotency_in_progress").Inc()
-		m.idempotency.WithLabelValues("in_progress").Inc()
 	case rewards.IsValidationError(err):
 		m.claims.WithLabelValues("invalid").Inc()
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

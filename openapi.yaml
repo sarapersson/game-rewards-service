@@ -80,8 +80,8 @@ paths:
 
         '409':
           description: |
-            Conflict. Possible error codes are `reward_already_claimed`,
-            `idempotency_key_reused`, and `idempotency_key_in_progress`.
+            Conflict. Possible error codes are `reward_already_claimed` and
+            `idempotency_key_reused`.
 
             A stored duplicate-reward response can also be replayed as `409`.
           headers:
@@ -89,11 +89,6 @@ paths:
               $ref: '#/components/headers/RequestID'
             Idempotent-Replayed:
               $ref: '#/components/headers/IdempotentReplayed'
-            Retry-After:
-              description: Present as `1` for `idempotency_key_in_progress`.
-              schema:
-                type: string
-                const: '1'
           content:
             application/json:
               schema:
@@ -272,7 +267,6 @@ components:
                 - invalid_idempotency_key
                 - reward_already_claimed
                 - idempotency_key_reused
-                - idempotency_key_in_progress
                 - request_body_too_large
                 - unsupported_media_type
                 - service_unavailable

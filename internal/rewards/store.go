@@ -53,18 +53,18 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 	}
 	defer cancel()
 
-	tx, err := s.pool.BeginTx(queryCtx, pgx.TxOptions{})
+	tx, err := s.pool.BeginTx(queryCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return CreateClaimResult{}, mapPostgresError(queryCtx, err)
 	}
 	defer s.rollbackTransaction(tx)
 
-	inserted, err := insertProcessingIdempotencyKey(queryCtx, tx, cmd)
+	reserved, err := tryReserveIdempotencyKey(queryCtx, tx, cmd)
 	if err != nil {
 		return CreateClaimResult{}, err
 	}
 
-	if !inserted {
+	if !reserved {
 		result, err := replayIdempotentClaim(queryCtx, tx, cmd)
 		if err != nil {
 			return CreateClaimResult{}, err
@@ -128,40 +128,32 @@ func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, cont
 	return queryCtx, cancel, nil
 }
 
-func insertProcessingIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (bool, error) {
+func tryReserveIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (bool, error) {
 	const query = `
 INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (operation, key_hash) DO NOTHING
-RETURNING state`
+ON CONFLICT (operation, key_hash) DO NOTHING`
 
-	var state string
-
-	err := tx.QueryRow(
+	tag, err := tx.Exec(
 		ctx,
 		query,
 		cmd.Operation,
 		cmd.KeyHash,
 		cmd.RequestHash,
 		idempotencyStateProcessing,
-	).Scan(&state)
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-
 		return false, mapPostgresError(ctx, err)
 	}
 
-	return true, nil
+	return tag.RowsAffected() == 1, nil
 }
 
 func replayIdempotentClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {
 	const query = `
 SELECT request_hash, state, response_status, response_body
 FROM idempotency_keys
-WHERE operation = $1 AND key_hash = $2
-FOR UPDATE`
+WHERE operation = $1 AND key_hash = $2`
 
 	var (
 		requestHash    []byte
@@ -180,16 +172,12 @@ FOR UPDATE`
 		return CreateClaimResult{}, mapPostgresError(ctx, err)
 	}
 
+	if state != idempotencyStateCompleted {
+		return CreateClaimResult{}, fmt.Errorf("unexpected committed idempotency state %q: %w", state, ErrInternal)
+	}
+
 	if !bytes.Equal(requestHash, cmd.RequestHash) {
 		return CreateClaimResult{}, ErrIdempotencyKeyReused
-	}
-
-	if state == idempotencyStateProcessing {
-		return CreateClaimResult{}, ErrIdempotencyInProgress
-	}
-
-	if state != idempotencyStateCompleted {
-		return CreateClaimResult{}, fmt.Errorf("unexpected idempotency state %q: %w", state, ErrInternal)
 	}
 
 	if !responseStatus.Valid || len(responseBody) == 0 {

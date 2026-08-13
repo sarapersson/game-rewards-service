@@ -21,7 +21,7 @@ For a valid `POST /v1/reward-claims` request, the service:
 1. normalizes and validates the request and `Idempotency-Key`;
 2. hashes the normalized key and accepted request;
 3. starts a PostgreSQL transaction;
-4. creates or loads the idempotency record;
+4. reserves the idempotency key or loads its completed response;
 5. enforces reward uniqueness with `UNIQUE (player_id, campaign_id, reward_id)`;
 6. creates the reward claim and one `RewardClaimed` outbox event when the claim is new;
 7. stores the deterministic response in the idempotency record;
@@ -40,8 +40,11 @@ The design deliberately separates client retry idempotency, business-level rewar
 **Client retries** use `Idempotency-Key`:
 
 * same normalized key + same accepted request -> replay the stored response;
-* same normalized key + different accepted request -> `409 idempotency_key_reused`;
-* a visible committed idempotency record in `processing` state -> `409 idempotency_key_in_progress`.
+* same normalized key + different accepted request -> `409 idempotency_key_reused`.
+
+The `processing` state exists only inside the reward-claim transaction while its deterministic response is being established. A committed idempotency row that remains in `processing` violates that transaction invariant and is surfaced as `500 internal_error`, not as a retryable client conflict.
+
+Reward-claim transactions explicitly use PostgreSQL `READ COMMITTED`. The reservation insert uses the unique `(operation, key_hash)` key as the concurrency boundary; after a conflicting reservation resolves, replay reads the immutable completed response with an ordinary `SELECT` instead of taking an additional row lock.
 
 **Business duplicates** use the database constraint:
 

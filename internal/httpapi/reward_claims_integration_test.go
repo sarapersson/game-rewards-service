@@ -124,6 +124,61 @@ WHERE aggregate_type = $1
 	}
 }
 
+func TestRewardClaimsHandlerTreatsCommittedProcessingIdempotencyAsInternal(t *testing.T) {
+	pool := openHTTPIntegrationPool(t)
+	store := rewards.NewPostgresStore(pool, 2*time.Second)
+	service := rewards.NewService(store)
+
+	testName := strings.ReplaceAll(t.Name(), "/", "-")
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	idempotencyKey := "claim-key-" + testName
+	body := `{"player_id":"` + playerID + `","campaign_id":"` + campaignID + `","reward_id":"` + rewardID + `"}`
+
+	keyHash, err := idempotency.HashKey(idempotencyKey)
+	if err != nil {
+		t.Fatalf("hash idempotency key: %v", err)
+	}
+	requestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
+		PlayerID:   playerID,
+		CampaignID: campaignID,
+		RewardID:   rewardID,
+	})
+	if err != nil {
+		t.Fatalf("hash reward claim request: %v", err)
+	}
+
+	cleanupHTTPIntegrationRewardClaim(t, pool, keyHash[:], playerID, campaignID, rewardID)
+	t.Cleanup(func() {
+		cleanupHTTPIntegrationRewardClaim(t, pool, keyHash[:], playerID, campaignID, rewardID)
+	})
+
+	_, err = pool.Exec(
+		context.Background(),
+		`
+INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
+VALUES ($1, $2, $3, 'processing')`,
+		idempotency.RewardClaimOperation,
+		keyHash[:],
+		requestHash[:],
+	)
+	if err != nil {
+		t.Fatalf("seed committed processing idempotency key: %v", err)
+	}
+
+	rec := performRewardClaimRequest(t, service, idempotencyKey, body)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), errorCodeInternal) {
+		t.Fatalf("response body = %q, want error code %q", rec.Body.String(), errorCodeInternal)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want absent", got)
+	}
+}
+
 func performRewardClaimRequest(t *testing.T, service rewardClaimCreator, idempotencyKey, body string) *httptest.ResponseRecorder {
 	t.Helper()
 

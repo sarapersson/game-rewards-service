@@ -28,7 +28,6 @@ const (
 	errorCodeInvalidIdempotencyKey  = "invalid_idempotency_key"
 	errorCodeIdempotencyKeyRequired = "idempotency_key_required"
 	errorCodeIdempotencyKeyReused   = "idempotency_key_reused"
-	errorCodeIdempotencyInProgress  = "idempotency_key_in_progress"
 	errorCodeInvalidJSON            = "invalid_json"
 	errorCodeInvalidRequest         = "invalid_request"
 	errorCodeRequestBodyTooLarge    = "request_body_too_large"
@@ -247,8 +246,7 @@ func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
 	default:
 		if rewards.IsValidationError(err) ||
 			errors.Is(err, rewards.ErrDuplicateClaim) ||
-			errors.Is(err, rewards.ErrIdempotencyKeyReused) ||
-			errors.Is(err, rewards.ErrIdempotencyInProgress) {
+			errors.Is(err, rewards.ErrIdempotencyKeyReused) {
 			return
 		}
 	}
@@ -269,9 +267,6 @@ func writeCreateClaimError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, errorCodeRewardAlreadyClaimed, "Reward has already been claimed")
 	case errors.Is(err, rewards.ErrIdempotencyKeyReused):
 		writeError(w, http.StatusConflict, errorCodeIdempotencyKeyReused, "Idempotency-Key was reused with a different request payload")
-	case errors.Is(err, rewards.ErrIdempotencyInProgress):
-		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusConflict, errorCodeIdempotencyInProgress, "A request with this Idempotency-Key is still processing")
 	case rewards.IsValidationError(err):
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, err.Error())
 	case errors.Is(err, rewards.ErrUnavailable):
