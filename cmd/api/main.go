@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,10 +20,17 @@ import (
 )
 
 func main() {
-	os.Exit(run())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	exitCode := run(ctx)
+	stop()
+	os.Exit(exitCode)
 }
 
-func run() int {
+func run(ctx context.Context) int {
+	if ctx.Err() != nil {
+		return 0
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", slog.Any("error", err))
@@ -31,14 +39,22 @@ func run() int {
 
 	logger := newLogger(cfg).With(slog.String("component", "api"))
 
-	dbPool, err := postgres.OpenPool(context.Background(), cfg.Database)
+	dbPool, err := postgres.OpenPool(ctx, cfg.Database)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return 0
+		}
+
 		logger.Error("open postgres pool", slog.Any("error", err))
 		return 1
 	}
 	defer dbPool.Close()
 
-	if err := postgres.Ping(context.Background(), dbPool, cfg.Database.PingTimeout); err != nil {
+	if err := postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return 0
+		}
+
 		logger.Error("ping postgres", slog.Any("error", err))
 		return 1
 	}
@@ -81,22 +97,37 @@ func run() int {
 		},
 	)
 
+	if ctx.Err() != nil {
+		return 0
+	}
+
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		logger.Error(
+			"listen on http address",
+			slog.String("addr", server.Addr),
+			slog.Any("error", err),
+		)
+		return 1
+	}
+	defer listener.Close()
+
+	if ctx.Err() != nil {
+		return 0
+	}
+
 	serverErrCh := make(chan error, 1)
 
 	logger.Info("starting http server", slog.String("addr", server.Addr))
 
 	go func() {
-		err := server.ListenAndServe()
+		err := server.Serve(listener)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
 
 		serverErrCh <- err
 	}()
-
-	shutdownCh := make(chan os.Signal, 1)
-	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(shutdownCh)
 
 	select {
 	case err := <-serverErrCh:
@@ -107,8 +138,11 @@ func run() int {
 
 		return 0
 
-	case sig := <-shutdownCh:
-		logger.Info("shutdown signal received", slog.String("signal", sig.String()))
+	case <-ctx.Done():
+		logger.Info(
+			"shutdown requested",
+			slog.String("shutdown_cause", context.Cause(ctx).Error()),
+		)
 
 		if err := stopHTTPServer(cfg.ShutdownTimeout, server, serverErrCh); err != nil {
 			logger.Error("http server shutdown failed", slog.Any("error", err))

@@ -35,10 +35,17 @@ type componentResult struct {
 }
 
 func main() {
-	os.Exit(run())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	exitCode := run(ctx)
+	stop()
+	os.Exit(exitCode)
 }
 
-func run() int {
+func run(ctx context.Context) int {
+	if ctx.Err() != nil {
+		return 0
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", slog.Any("error", err))
@@ -47,14 +54,22 @@ func run() int {
 
 	logger := newLogger(cfg).With(slog.String("component", "worker"))
 
-	dbPool, err := postgres.OpenPool(context.Background(), cfg.Database)
+	dbPool, err := postgres.OpenPool(ctx, cfg.Database)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return 0
+		}
+
 		logger.Error("open postgres pool", slog.Any("error", err))
 		return 1
 	}
 	defer dbPool.Close()
 
-	if err := postgres.Ping(context.Background(), dbPool, cfg.Database.PingTimeout); err != nil {
+	if err := postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return 0
+		}
+
 		logger.Error("ping postgres", slog.Any("error", err))
 		return 1
 	}
@@ -136,6 +151,10 @@ func run() int {
 		},
 	)
 
+	if ctx.Err() != nil {
+		return 0
+	}
+
 	listener, err := net.Listen("tcp", adminServer.Addr)
 	if err != nil {
 		logger.Error(
@@ -147,12 +166,12 @@ func run() int {
 	}
 	defer listener.Close()
 
+	if ctx.Err() != nil {
+		return 0
+	}
+
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
-
-	shutdownCh := make(chan os.Signal, 1)
-	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(shutdownCh)
 
 	results := make(chan componentResult, 2)
 
@@ -198,10 +217,10 @@ func run() int {
 	}()
 
 	select {
-	case sig := <-shutdownCh:
+	case <-ctx.Done():
 		logger.Info(
-			"shutdown signal received",
-			slog.String("signal", sig.String()),
+			"shutdown requested",
+			slog.String("shutdown_cause", context.Cause(ctx).Error()),
 		)
 
 		if err := stopComponents(
