@@ -173,9 +173,7 @@ func isAllowedRequestIDRune(r rune) bool {
 
 func newRequestID() string {
 	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return time.Now().UTC().Format("20060102150405.000000000")
-	}
+	rand.Read(bytes[:])
 
 	return hex.EncodeToString(bytes[:])
 }

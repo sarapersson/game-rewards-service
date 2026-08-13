@@ -3,16 +3,11 @@ package rewards
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 )
 
-type IDGenerator func() (string, error)
-
-func NewUUIDV4() (string, error) {
+func newUUIDV4() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate uuid: %w", err)
-	}
+	rand.Read(b[:])
 
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
@@ -28,5 +23,5 @@ func NewUUIDV4() (string, error) {
 	out[23] = '-'
 	hex.Encode(out[24:36], b[10:16])
 
-	return string(out[:]), nil
+	return string(out[:])
 }

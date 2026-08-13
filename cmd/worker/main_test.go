@@ -28,15 +28,8 @@ func TestNewWorkerID(t *testing.T) {
 	const serviceName = "game-rewards-service"
 	const prefix = serviceName + "-worker-"
 
-	firstID, err := newWorkerID(serviceName)
-	if err != nil {
-		t.Fatalf("newWorkerID returned error: %v", err)
-	}
-
-	secondID, err := newWorkerID(serviceName)
-	if err != nil {
-		t.Fatalf("newWorkerID returned error: %v", err)
-	}
+	firstID := newWorkerID(serviceName)
+	secondID := newWorkerID(serviceName)
 
 	if firstID == secondID {
 		t.Fatalf(
@@ -51,14 +44,6 @@ func TestNewWorkerID(t *testing.T) {
 				"worker ID %q does not have prefix %q",
 				workerID,
 				prefix,
-			)
-		}
-
-		if len(workerID) > maxWorkerIDLength {
-			t.Fatalf(
-				"worker ID length = %d, maximum = %d",
-				len(workerID),
-				maxWorkerIDLength,
 			)
 		}
 
@@ -80,18 +65,6 @@ func TestNewWorkerID(t *testing.T) {
 				workerInstanceIDBytes,
 			)
 		}
-	}
-}
-
-func TestNewWorkerIDRejectsIdentifierThatIsTooLong(t *testing.T) {
-	serviceName := strings.Repeat("s", maxWorkerIDLength)
-
-	workerID, err := newWorkerID(serviceName)
-	if err == nil {
-		t.Fatalf(
-			"expected error, got worker ID %q",
-			workerID,
-		)
 	}
 }
 

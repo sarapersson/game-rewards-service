@@ -212,10 +212,7 @@ func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCo
 }
 
 func insertRewardClaimedOutboxEvent(ctx context.Context, tx pgx.Tx, claim Claim) error {
-	eventID, err := NewUUIDV4()
-	if err != nil {
-		return fmt.Errorf("create reward claimed outbox event id: %w", ErrInternal)
-	}
+	eventID := newUUIDV4()
 
 	payload, err := json.Marshal(NewRewardClaimedEvent(eventID, claim))
 	if err != nil {

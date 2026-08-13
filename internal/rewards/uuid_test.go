@@ -7,10 +7,7 @@ import (
 )
 
 func TestNewUUIDV4Shape(t *testing.T) {
-	id, err := NewUUIDV4()
-	if err != nil {
-		t.Fatalf("NewUUIDV4 returned error: %v", err)
-	}
+	id := newUUIDV4()
 
 	if len(id) != 36 {
 		t.Fatalf("len(id) = %d, want 36", len(id))
