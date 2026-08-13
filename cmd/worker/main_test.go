@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+func TestRunStopsBeforeStartupWhenContextAlreadyCanceled(t *testing.T) {
+	// If run reaches config loading, this invalid override makes the test fail.
+	t.Setenv("APP_ENV", " ")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if exitCode := run(ctx); exitCode != 0 {
+		t.Fatalf("run exit code = %d, want 0", exitCode)
+	}
+}
+
 func TestNewWorkerID(t *testing.T) {
 	const serviceName = "game-rewards-service"
 	const prefix = serviceName + "-worker-"
