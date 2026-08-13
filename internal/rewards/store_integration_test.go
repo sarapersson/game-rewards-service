@@ -256,7 +256,7 @@ func TestPostgresStoreCreateClaimReplaysCompletedResponse(t *testing.T) {
 	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	replay := first
-	replay.Claim.ID = mustUUID(t)
+	replay.Claim.ID = newUUIDV4()
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
 
@@ -313,7 +313,7 @@ func TestPostgresStoreCreateClaimRejectsKeyReuseWithDifferentPayload(t *testing.
 	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	mismatch := first
-	mismatch.Claim.ID = mustUUID(t)
+	mismatch.Claim.ID = newUUIDV4()
 	mismatch.Claim.RewardID = rewardID + "-different"
 	mismatch.RequestHash = []byte("different-request-hash-32-bytes!")
 
@@ -452,7 +452,7 @@ func TestPostgresStoreCreateClaimReplaysDuplicateRewardResponse(t *testing.T) {
 	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
 
 	duplicateReplay := duplicate
-	duplicateReplay.Claim.ID = mustUUID(t)
+	duplicateReplay.Claim.ID = newUUIDV4()
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate, duplicateReplay)
 
@@ -692,7 +692,7 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 	cmds := make([]CreateClaimStoreCommand, attempts)
 	for i := range cmds {
 		cmds[i] = cmd
-		cmds[i].Claim.ID = mustUUID(t)
+		cmds[i].Claim.ID = newUUIDV4()
 	}
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
@@ -1047,7 +1047,7 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 		`
 INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
 VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-		mustUUID(t),
+		newUUIDV4(),
 		outboxAggregateTypeRewardClaim,
 		cmd.Claim.ID,
 		outboxEventTypeRewardClaimed,
@@ -1129,7 +1129,7 @@ func TestPostgresStoreCreateClaimReplayDoesNotCreateSecondOutboxEvent(t *testing
 	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	replay := first
-	replay.Claim.ID = mustUUID(t)
+	replay.Claim.ID = newUUIDV4()
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
 
@@ -1245,7 +1245,7 @@ func TestPostgresStoreCreateClaimKeyMismatchDoesNotCreateOutboxEvent(t *testing.
 	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	mismatch := first
-	mismatch.Claim.ID = mustUUID(t)
+	mismatch.Claim.ID = newUUIDV4()
 	mismatch.Claim.RewardID = rewardID + "-different"
 	mismatch.RequestHash = []byte("different-request-hash-32-bytes!")
 
@@ -1290,9 +1290,9 @@ WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
 func TestPostgresStoreOutboxEventsAreUniquePerAggregateAndEventType(t *testing.T) {
 	pool := openIntegrationPool(t)
 
-	aggregateID := mustUUID(t)
-	firstEventID := mustUUID(t)
-	secondEventID := mustUUID(t)
+	aggregateID := newUUIDV4()
+	firstEventID := newUUIDV4()
+	secondEventID := newUUIDV4()
 
 	runIntegrationCleanup(t, func() error {
 		_, err := pool.Exec(
@@ -1509,7 +1509,7 @@ func newIntegrationCreateClaimCommand(
 
 	return CreateClaimStoreCommand{
 		Claim: Claim{
-			ID:         mustUUID(t),
+			ID:         newUUIDV4(),
 			PlayerID:   playerID,
 			CampaignID: campaignID,
 			RewardID:   rewardID,
@@ -1525,15 +1525,4 @@ func integrationTestName(t *testing.T) string {
 	t.Helper()
 
 	return strings.ReplaceAll(t.Name(), "/", "-")
-}
-
-func mustUUID(t *testing.T) string {
-	t.Helper()
-
-	id, err := NewUUIDV4()
-	if err != nil {
-		t.Fatalf("generate uuid: %v", err)
-	}
-
-	return id
 }

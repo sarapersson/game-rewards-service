@@ -15,21 +15,10 @@ type Store interface {
 
 type Service struct {
 	store Store
-	newID IDGenerator
 }
 
 func NewService(store Store) *Service {
-	return &Service{
-		store: store,
-		newID: NewUUIDV4,
-	}
-}
-
-func NewServiceWithIDGenerator(store Store, newID IDGenerator) *Service {
-	return &Service{
-		store: store,
-		newID: newID,
-	}
+	return &Service{store: store}
 }
 
 func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (CreateClaimResult, error) {
@@ -63,15 +52,7 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 		return CreateClaimResult{}, fmt.Errorf("hash reward claim request: %w", ErrInternal)
 	}
 
-	newID := s.newID
-	if newID == nil {
-		newID = NewUUIDV4
-	}
-
-	id, err := newID()
-	if err != nil {
-		return CreateClaimResult{}, fmt.Errorf("create reward claim id: %w", err)
-	}
+	id := newUUIDV4()
 
 	claim := Claim{
 		ID:         id,

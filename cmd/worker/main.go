@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sarapersson/game-rewards-service/internal/adminhttp"
 	"github.com/sarapersson/game-rewards-service/internal/config"
@@ -24,10 +23,7 @@ import (
 	"github.com/sarapersson/game-rewards-service/internal/postgres"
 )
 
-const (
-	maxWorkerIDLength     = 128
-	workerInstanceIDBytes = 16
-)
+const workerInstanceIDBytes = 16
 
 type componentResult struct {
 	name string
@@ -92,11 +88,7 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
-	workerID, err := newWorkerID(cfg.ServiceName)
-	if err != nil {
-		logger.Error("create worker id", slog.Any("error", err))
-		return 1
-	}
+	workerID := newWorkerID(cfg.ServiceName)
 
 	store := outbox.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
 
@@ -331,29 +323,15 @@ func stopComponents(
 	return errors.Join(shutdownErr, componentErr)
 }
 
-func newWorkerID(serviceName string) (string, error) {
-	instanceID := make([]byte, workerInstanceIDBytes)
-	if _, err := rand.Read(instanceID); err != nil {
-		return "", fmt.Errorf(
-			"generate worker instance id: %w",
-			err,
-		)
-	}
+func newWorkerID(serviceName string) string {
+	var instanceID [workerInstanceIDBytes]byte
+	rand.Read(instanceID[:])
 
-	workerID := fmt.Sprintf(
+	return fmt.Sprintf(
 		"%s-worker-%s",
 		serviceName,
-		hex.EncodeToString(instanceID),
+		hex.EncodeToString(instanceID[:]),
 	)
-
-	if utf8.RuneCountInString(workerID) > maxWorkerIDLength {
-		return "", fmt.Errorf(
-			"worker id exceeds %d characters",
-			maxWorkerIDLength,
-		)
-	}
-
-	return workerID, nil
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

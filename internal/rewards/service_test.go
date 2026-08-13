@@ -45,9 +45,7 @@ func (s *fakeStore) CreateClaim(_ context.Context, cmd CreateClaimStoreCommand) 
 func TestServiceCreateClaim(t *testing.T) {
 	store := &fakeStore{}
 
-	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return serviceTestClaimID, nil
-	})
+	service := NewService(store)
 
 	result, err := service.CreateClaim(context.Background(), CreateClaimCommand{
 		PlayerID:       " player-123 ",
@@ -75,8 +73,8 @@ func TestServiceCreateClaim(t *testing.T) {
 		t.Fatal("CreateClaim did not call store")
 	}
 
-	if store.cmd.Claim.ID != serviceTestClaimID {
-		t.Fatalf("stored claim ID = %q, want %q", store.cmd.Claim.ID, serviceTestClaimID)
+	if !validUUID(store.cmd.Claim.ID) {
+		t.Fatalf("stored claim ID = %q, want UUID", store.cmd.Claim.ID)
 	}
 
 	if store.cmd.Claim.PlayerID != "player-123" {
@@ -136,9 +134,7 @@ func TestServiceCreateClaimReturnsValidStoreResultUnchanged(t *testing.T) {
 	}
 
 	store := &fakeStore{result: want}
-	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return "22222222-2222-4222-8222-222222222222", nil
-	})
+	service := NewService(store)
 
 	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
 	if err != nil {
@@ -163,9 +159,7 @@ func TestServiceCreateClaimRejectsInvalidStoreResult(t *testing.T) {
 		StatusCode:   CreateClaimStatusCreated,
 		ResponseBody: []byte(`{}`),
 	}}
-	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return serviceTestClaimID, nil
-	})
+	service := NewService(store)
 
 	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
 	if err == nil {
@@ -354,12 +348,7 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakeStore{}
-			idCalled := false
-
-			service := NewServiceWithIDGenerator(store, func() (string, error) {
-				idCalled = true
-				return "claim-123", nil
-			})
+			service := NewService(store)
 
 			_, err := service.CreateClaim(context.Background(), tt.cmd)
 			if err == nil {
@@ -387,10 +376,6 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 				t.Fatalf("CreateClaim error = %q, want %q", err.Error(), tt.wantMessage)
 			}
 
-			if idCalled {
-				t.Fatal("ID generator was called for invalid command")
-			}
-
 			if store.called {
 				t.Fatal("store was called for invalid command")
 			}
@@ -400,9 +385,7 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 
 func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 	store := &fakeStore{}
-	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return serviceTestClaimID, nil
-	})
+	service := NewService(store)
 	maxLengthID := strings.Repeat("å", maxIDLength)
 
 	if _, err := service.CreateClaim(context.Background(), CreateClaimCommand{
@@ -424,9 +407,7 @@ func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 func TestServiceCreateClaimPropagatesDuplicateClaim(t *testing.T) {
 	store := &fakeStore{err: ErrDuplicateClaim}
 
-	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return "claim-123", nil
-	})
+	service := NewService(store)
 
 	_, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
 	if err == nil {
@@ -439,12 +420,7 @@ func TestServiceCreateClaimPropagatesDuplicateClaim(t *testing.T) {
 }
 
 func TestServiceCreateClaimReturnsUnavailableWithoutStore(t *testing.T) {
-	idCalled := false
-
-	service := NewServiceWithIDGenerator(nil, func() (string, error) {
-		idCalled = true
-		return "claim-123", nil
-	})
+	service := NewService(nil)
 
 	_, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
 	if err == nil {
@@ -453,32 +429,6 @@ func TestServiceCreateClaimReturnsUnavailableWithoutStore(t *testing.T) {
 
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("CreateClaim error = %v, want ErrUnavailable", err)
-	}
-
-	if idCalled {
-		t.Fatal("ID generator was called without an available store")
-	}
-}
-
-func TestServiceCreateClaimReturnsIDGenerationError(t *testing.T) {
-	idErr := errors.New("random source failed")
-	store := &fakeStore{}
-
-	service := NewServiceWithIDGenerator(store, func() (string, error) {
-		return "", idErr
-	})
-
-	_, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
-	if err == nil {
-		t.Fatal("CreateClaim returned nil error, want ID generation error")
-	}
-
-	if !errors.Is(err, idErr) {
-		t.Fatalf("CreateClaim error = %v, want wrapped ID error", err)
-	}
-
-	if store.called {
-		t.Fatal("store was called after ID generation failed")
 	}
 }
 
