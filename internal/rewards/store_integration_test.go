@@ -834,54 +834,72 @@ WHERE operation = $1 AND key_hash = $2`,
 	}
 }
 
-func TestPostgresStoreCreateClaimReturnsInProgressForProcessingKey(t *testing.T) {
-	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+func TestPostgresStoreCreateClaimTreatsCommittedProcessingKeyAsInternal(t *testing.T) {
+	tests := []struct {
+		name              string
+		storedHashDiffers bool
+	}{
+		{name: "same request hash"},
+		{name: "different request hash", storedHashDiffers: true},
+	}
 
-	testName := integrationTestName(t)
-	playerID := "player-" + testName
-	campaignID := "campaign-" + testName
-	rewardID := "reward-" + testName
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := openIntegrationPool(t)
+			store := NewPostgresStore(pool, 2*time.Second)
 
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+			testName := integrationTestName(t)
+			playerID := "player-" + testName
+			campaignID := "campaign-" + testName
+			rewardID := "reward-" + testName
+			cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
-	_, err := pool.Exec(
-		context.Background(),
-		`
+			cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+
+			storedRequestHash := cmd.RequestHash
+			if tt.storedHashDiffers {
+				storedRequestHash = append([]byte(nil), cmd.RequestHash...)
+				storedRequestHash[0] ^= 0xff
+			}
+
+			_, err := pool.Exec(
+				context.Background(),
+				`
 INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
 VALUES ($1, $2, $3, $4)`,
-		cmd.Operation,
-		cmd.KeyHash,
-		cmd.RequestHash,
-		idempotencyStateProcessing,
-	)
-	if err != nil {
-		t.Fatalf("seed processing idempotency key: %v", err)
-	}
+				cmd.Operation,
+				cmd.KeyHash,
+				storedRequestHash,
+				idempotencyStateProcessing,
+			)
+			if err != nil {
+				t.Fatalf("seed committed processing idempotency key: %v", err)
+			}
 
-	_, err = store.CreateClaim(context.Background(), cmd)
-	if !errors.Is(err, ErrIdempotencyInProgress) {
-		t.Fatalf("CreateClaim error = %v, want %v", err, ErrIdempotencyInProgress)
-	}
+			_, err = store.CreateClaim(context.Background(), cmd)
+			if !errors.Is(err, ErrInternal) {
+				t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
+			}
 
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
+			var claimCount int
+			err = pool.QueryRow(
+				context.Background(),
+				`
 SELECT count(*)
 FROM reward_claims
 WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
+				playerID,
+				campaignID,
+				rewardID,
+			).Scan(&claimCount)
+			if err != nil {
+				t.Fatalf("count reward claims: %v", err)
+			}
 
-	if claimCount != 0 {
-		t.Fatalf("reward claim count = %d, want 0", claimCount)
+			if claimCount != 0 {
+				t.Fatalf("reward claim count = %d, want 0", claimCount)
+			}
+		})
 	}
 }
 

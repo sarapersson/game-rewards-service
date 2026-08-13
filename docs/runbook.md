@@ -114,8 +114,8 @@ First distinguish the cases:
 
 * `reward_already_claimed`: the business uniqueness constraint rejected the same player/campaign/reward;
 * `idempotency_key_reused`: the same key was used for a different accepted request;
-* `idempotency_key_in_progress`: a committed `processing` record is visible and should be investigated if it remains stale;
-* `Idempotent-Replayed: true`: the response was loaded from a completed idempotency record.
+* `Idempotent-Replayed: true`: the response was loaded from a completed idempotency record;
+* encountering a committed `processing` idempotency row yields `500 internal_error` and indicates an invariant failure.
 
 Inspect the business identity:
 
@@ -167,7 +167,7 @@ LIMIT 100;
 
 Do not paste raw idempotency keys into logs, tickets, dashboards, or shared incident notes.
 
-A stale `processing` idempotency row is not routine retention data. Investigate how it was created before changing or deleting it.
+A committed `processing` idempotency row is an invariant violation: successful reward-claim transactions complete the row before commit. Investigate how it was created before changing or deleting it, and do not treat it as a normal retry or routine retention case.
 
 ## Retention and cleanup
 

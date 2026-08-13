@@ -550,11 +550,10 @@ func TestRewardClaimsHandlerWritesReplayHeader(t *testing.T) {
 
 func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 	tests := []struct {
-		name           string
-		err            error
-		wantStatus     int
-		wantCode       string
-		wantRetryAfter string
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
 	}{
 		{
 			name:       "duplicate claim",
@@ -567,13 +566,6 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 			err:        rewards.ErrIdempotencyKeyReused,
 			wantStatus: http.StatusConflict,
 			wantCode:   errorCodeIdempotencyKeyReused,
-		},
-		{
-			name:           "idempotency key in progress",
-			err:            rewards.ErrIdempotencyInProgress,
-			wantStatus:     http.StatusConflict,
-			wantCode:       errorCodeIdempotencyInProgress,
-			wantRetryAfter: "1",
 		},
 		{
 			name:       "service validation",
@@ -634,10 +626,6 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 
 			if !strings.Contains(rec.Body.String(), tt.wantCode) {
 				t.Fatalf("response body = %q, want error code %q", rec.Body.String(), tt.wantCode)
-			}
-
-			if got := rec.Header().Get("Retry-After"); got != tt.wantRetryAfter {
-				t.Fatalf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
 			}
 		})
 	}

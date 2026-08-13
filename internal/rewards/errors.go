@@ -3,11 +3,10 @@ package rewards
 import "errors"
 
 var (
-	ErrDuplicateClaim        = errors.New("reward already claimed")
-	ErrUnavailable           = errors.New("reward claims store unavailable")
-	ErrInternal              = errors.New("reward claims store internal error")
-	ErrIdempotencyKeyReused  = errors.New("idempotency key reused with different request payload")
-	ErrIdempotencyInProgress = errors.New("idempotency key is still processing")
+	ErrDuplicateClaim       = errors.New("reward already claimed")
+	ErrUnavailable          = errors.New("reward claims store unavailable")
+	ErrInternal             = errors.New("reward claims store internal error")
+	ErrIdempotencyKeyReused = errors.New("idempotency key reused with different request payload")
 )
 
 type ValidationError struct {

@@ -113,7 +113,6 @@ The three identifiers are trimmed, required, and limited to 128 Unicode characte
 | Same key + same accepted request               | stored response replay                               |
 | Same key + different accepted request          | `409 idempotency_key_reused`                         |
 | Different key + same player/campaign/reward    | `409 reward_already_claimed`                         |
-| Visible committed processing idempotency state | `409 idempotency_key_in_progress` + `Retry-After: 1` |
 | Invalid input                                  | `400`, `413`, or `415`                               |
 | Known PostgreSQL availability failure          | `503 service_unavailable`                            |
 | Unexpected internal failure                    | `500 internal_error`                                 |
