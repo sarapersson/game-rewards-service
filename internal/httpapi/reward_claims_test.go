@@ -556,12 +556,6 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 		wantCode   string
 	}{
 		{
-			name:       "duplicate claim",
-			err:        rewards.ErrDuplicateClaim,
-			wantStatus: http.StatusConflict,
-			wantCode:   errorCodeRewardAlreadyClaimed,
-		},
-		{
 			name:       "idempotency key reused",
 			err:        rewards.ErrIdempotencyKeyReused,
 			wantStatus: http.StatusConflict,

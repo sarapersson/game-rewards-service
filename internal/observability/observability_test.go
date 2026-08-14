@@ -150,6 +150,7 @@ func TestRewardMetricsRecordDistinctIdempotencyOutcomes(t *testing.T) {
 	}
 
 	metrics.ObserveRewardClaim(rewards.CreateClaimResult{StatusCode: http.StatusCreated}, nil)
+	metrics.ObserveRewardClaim(rewards.CreateClaimResult{StatusCode: http.StatusConflict}, nil)
 	metrics.ObserveRewardClaim(rewards.CreateClaimResult{StatusCode: http.StatusConflict, Replayed: true}, nil)
 	metrics.ObserveRewardClaim(rewards.CreateClaimResult{}, rewards.ErrIdempotencyKeyReused)
 	metrics.ObserveRewardClaim(rewards.CreateClaimResult{}, errors.New("database credentials must not appear"))
@@ -157,10 +158,11 @@ func TestRewardMetricsRecordDistinctIdempotencyOutcomes(t *testing.T) {
 	got := scrape(t, registry)
 	for _, want := range []string{
 		`game_rewards_reward_claim_operations_total{outcome="created"} 1`,
+		`game_rewards_reward_claim_operations_total{outcome="already_claimed"} 1`,
 		`game_rewards_reward_claim_operations_total{outcome="replayed_already_claimed"} 1`,
 		`game_rewards_reward_claim_operations_total{outcome="idempotency_key_reused"} 1`,
 		`game_rewards_reward_claim_operations_total{outcome="internal_error"} 1`,
-		`game_rewards_idempotency_operations_total{outcome="new"} 1`,
+		`game_rewards_idempotency_operations_total{outcome="new"} 2`,
 		`game_rewards_idempotency_operations_total{outcome="replayed"} 1`,
 		`game_rewards_idempotency_operations_total{outcome="key_reused"} 1`,
 		`game_rewards_idempotency_operations_total{outcome="failed"} 1`,

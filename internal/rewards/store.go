@@ -17,9 +17,6 @@ import (
 )
 
 const (
-	rewardClaimsPlayerCampaignRewardConstraint = "reward_claims_player_campaign_reward_uniq"
-
-	postgresSQLStateUniqueViolation              = "23505"
 	postgresSQLStateConnectionException          = "08000"
 	postgresSQLStateUnableToEstablishConnection  = "08001"
 	postgresSQLStateConnectionDoesNotExist       = "08003"
@@ -77,22 +74,21 @@ func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCom
 		return result, nil
 	}
 
-	created, err := insertClaimForIdempotentCreate(queryCtx, tx, cmd.Claim)
+	created, inserted, err := tryInsertClaimForIdempotentCreate(queryCtx, tx, cmd.Claim)
 	if err != nil {
-		if errors.Is(err, ErrDuplicateClaim) {
-			result, completeErr := completeDuplicateClaim(queryCtx, tx, cmd)
-			if completeErr != nil {
-				return CreateClaimResult{}, completeErr
-			}
-
-			if err := tx.Commit(queryCtx); err != nil {
-				return CreateClaimResult{}, mapPostgresError(queryCtx, err)
-			}
-
-			return result, nil
+		return CreateClaimResult{}, err
+	}
+	if !inserted {
+		result, err := completeDuplicateClaim(queryCtx, tx, cmd)
+		if err != nil {
+			return CreateClaimResult{}, err
 		}
 
-		return CreateClaimResult{}, err
+		if err := tx.Commit(queryCtx); err != nil {
+			return CreateClaimResult{}, mapPostgresError(queryCtx, err)
+		}
+
+		return result, nil
 	}
 
 	result, err := completeCreatedClaim(queryCtx, tx, cmd, created)
@@ -304,7 +300,7 @@ type claimInserter interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func insertClaimForIdempotentCreate(ctx context.Context, db claimInserter, claim Claim) (Claim, error) {
+func tryInsertClaimForIdempotentCreate(ctx context.Context, db claimInserter, claim Claim) (Claim, bool, error) {
 	const query = `
 INSERT INTO reward_claims (id, player_id, campaign_id, reward_id, status)
 VALUES ($1, $2, $3, $4, $5)
@@ -332,22 +328,18 @@ RETURNING id::text, player_id, campaign_id, reward_id, status, created_at, updat
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Claim{}, ErrDuplicateClaim
+			return Claim{}, false, nil
 		}
 
-		return Claim{}, mapPostgresError(ctx, err)
+		return Claim{}, false, mapPostgresError(ctx, err)
 	}
 
-	return created, nil
+	return created, true, nil
 }
 
 func mapPostgresError(ctx context.Context, err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		if pgErr.Code == postgresSQLStateUniqueViolation && pgErr.ConstraintName == rewardClaimsPlayerCampaignRewardConstraint {
-			return ErrDuplicateClaim
-		}
-
 		if isPostgresUnavailableSQLState(pgErr.Code) {
 			return fmt.Errorf("postgres reward claim operation: %w", ErrUnavailable)
 		}

@@ -24,7 +24,6 @@ const (
 	maxIdempotencyKeyLength = 255
 	maxRewardClaimBodyBytes = 64 * 1024
 
-	errorCodeRewardAlreadyClaimed   = "reward_already_claimed"
 	errorCodeInvalidIdempotencyKey  = "invalid_idempotency_key"
 	errorCodeIdempotencyKeyRequired = "idempotency_key_required"
 	errorCodeIdempotencyKeyReused   = "idempotency_key_reused"
@@ -245,7 +244,6 @@ func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
 		errorClass = "internal"
 	default:
 		if rewards.IsValidationError(err) ||
-			errors.Is(err, rewards.ErrDuplicateClaim) ||
 			errors.Is(err, rewards.ErrIdempotencyKeyReused) {
 			return
 		}
@@ -263,8 +261,6 @@ func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
 
 func writeCreateClaimError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, rewards.ErrDuplicateClaim):
-		writeError(w, http.StatusConflict, errorCodeRewardAlreadyClaimed, "Reward has already been claimed")
 	case errors.Is(err, rewards.ErrIdempotencyKeyReused):
 		writeError(w, http.StatusConflict, errorCodeIdempotencyKeyReused, "Idempotency-Key was reused with a different request payload")
 	case rewards.IsValidationError(err):

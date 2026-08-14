@@ -60,9 +60,6 @@ func (m *RewardMetrics) ObserveRewardClaim(result rewards.CreateClaimResult, err
 	case errors.Is(err, rewards.ErrUnavailable):
 		m.claims.WithLabelValues("unavailable").Inc()
 		m.idempotency.WithLabelValues("failed").Inc()
-	case errors.Is(err, rewards.ErrDuplicateClaim):
-		m.claims.WithLabelValues("already_claimed").Inc()
-		m.idempotency.WithLabelValues("failed").Inc()
 	default:
 		m.claims.WithLabelValues("internal_error").Inc()
 		m.idempotency.WithLabelValues("failed").Inc()

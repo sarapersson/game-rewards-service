@@ -404,18 +404,33 @@ func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 	}
 }
 
-func TestServiceCreateClaimPropagatesDuplicateClaim(t *testing.T) {
-	store := &fakeStore{err: ErrDuplicateClaim}
+func TestServiceCreateClaimReturnsDuplicateResult(t *testing.T) {
+	body, err := MarshalDuplicateClaimResponse()
+	if err != nil {
+		t.Fatalf("MarshalDuplicateClaimResponse returned error: %v", err)
+	}
+
+	want := CreateClaimResult{
+		StatusCode:   CreateClaimStatusConflict,
+		ResponseBody: body,
+	}
+	store := &fakeStore{result: want}
 
 	service := NewService(store)
 
-	_, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
-	if err == nil {
-		t.Fatal("CreateClaim returned nil error, want duplicate claim error")
+	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
+	if err != nil {
+		t.Fatalf("CreateClaim returned error: %v", err)
 	}
 
-	if !errors.Is(err, ErrDuplicateClaim) {
-		t.Fatalf("CreateClaim error = %v, want ErrDuplicateClaim", err)
+	if got.StatusCode != want.StatusCode {
+		t.Fatalf("status code = %d, want %d", got.StatusCode, want.StatusCode)
+	}
+	if got.Replayed {
+		t.Fatal("duplicate result should not be marked replayed")
+	}
+	if !bytes.Equal(got.ResponseBody, want.ResponseBody) {
+		t.Fatalf("response body = %q, want %q", got.ResponseBody, want.ResponseBody)
 	}
 }
 
