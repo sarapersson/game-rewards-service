@@ -68,48 +68,33 @@ func TestPostgresStoreRollbackTransactionIsBounded(t *testing.T) {
 	}
 }
 
-func TestMapPostgresErrorDuplicateClaim(t *testing.T) {
-	err := mapPostgresError(context.Background(), &pgconn.PgError{
-		Code:           postgresSQLStateUniqueViolation,
-		ConstraintName: rewardClaimsPlayerCampaignRewardConstraint,
-	})
+func TestMapPostgresErrorUniqueViolationIsInternal(t *testing.T) {
+	const (
+		uniqueViolationSQLState = "23505"
+		sensitiveMessage        = "connection failed with password super-secret"
+	)
 
-	if !errors.Is(err, ErrDuplicateClaim) {
-		t.Fatalf("mapPostgresError() = %v, want ErrDuplicateClaim", err)
-	}
+	for _, constraint := range []string{
+		"reward_claims_player_campaign_reward_uniq",
+		"some_other_constraint",
+	} {
+		t.Run(constraint, func(t *testing.T) {
+			err := mapPostgresError(context.Background(), &pgconn.PgError{
+				Code:           uniqueViolationSQLState,
+				ConstraintName: constraint,
+				Message:        sensitiveMessage,
+			})
 
-	if errors.Is(err, ErrInternal) {
-		t.Fatalf("mapPostgresError() = %v, did not want ErrInternal", err)
-	}
-
-	if errors.Is(err, ErrUnavailable) {
-		t.Fatalf("mapPostgresError() = %v, did not want ErrUnavailable", err)
-	}
-}
-
-func TestMapPostgresErrorUniqueViolationForDifferentConstraint(t *testing.T) {
-	const sensitiveMessage = "connection failed with password super-secret"
-
-	err := mapPostgresError(context.Background(), &pgconn.PgError{
-		Code:           postgresSQLStateUniqueViolation,
-		ConstraintName: "some_other_constraint",
-		Message:        sensitiveMessage,
-	})
-
-	if !errors.Is(err, ErrInternal) {
-		t.Fatalf("mapPostgresError() = %v, want ErrInternal", err)
-	}
-
-	if errors.Is(err, ErrUnavailable) {
-		t.Fatalf("mapPostgresError() = %v, did not want ErrUnavailable", err)
-	}
-
-	if errors.Is(err, ErrDuplicateClaim) {
-		t.Fatalf("mapPostgresError() = %v, did not want ErrDuplicateClaim", err)
-	}
-
-	if strings.Contains(err.Error(), sensitiveMessage) {
-		t.Fatal("mapPostgresError() exposed raw PostgreSQL error details")
+			if !errors.Is(err, ErrInternal) {
+				t.Fatalf("mapPostgresError() = %v, want ErrInternal", err)
+			}
+			if errors.Is(err, ErrUnavailable) {
+				t.Fatalf("mapPostgresError() = %v, did not want ErrUnavailable", err)
+			}
+			if strings.Contains(err.Error(), sensitiveMessage) {
+				t.Fatal("mapPostgresError() exposed raw PostgreSQL error details")
+			}
+		})
 	}
 }
 
@@ -166,10 +151,6 @@ func TestMapPostgresErrorUnavailable(t *testing.T) {
 
 			if errors.Is(err, ErrInternal) {
 				t.Fatalf("mapPostgresError() = %v, did not want ErrInternal", err)
-			}
-
-			if errors.Is(err, ErrDuplicateClaim) {
-				t.Fatalf("mapPostgresError() = %v, did not want ErrDuplicateClaim", err)
 			}
 		})
 	}
@@ -343,10 +324,6 @@ func TestMapPostgresErrorInternal(t *testing.T) {
 
 			if errors.Is(err, ErrUnavailable) {
 				t.Fatalf("mapPostgresError() = %v, did not want ErrUnavailable", err)
-			}
-
-			if errors.Is(err, ErrDuplicateClaim) {
-				t.Fatalf("mapPostgresError() = %v, did not want ErrDuplicateClaim", err)
 			}
 		})
 	}
