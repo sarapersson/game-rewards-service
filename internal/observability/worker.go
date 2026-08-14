@@ -155,8 +155,7 @@ func normalizeOperation(operation outbox.Operation) string {
 	case outbox.OperationClaim,
 		outbox.OperationMarkPublished,
 		outbox.OperationScheduleRetry,
-		outbox.OperationMarkDeadLetter,
-		outbox.OperationCalculateBackoff:
+		outbox.OperationMarkDeadLetter:
 		return string(operation)
 	default:
 		return "unknown"

@@ -26,8 +26,7 @@ type Worker struct {
 	lockTTL        time.Duration
 	publishTimeout time.Duration
 	maxAttempts    int
-	backoff        BackoffPolicy
-	now            func() time.Time
+	backoff        backoffPolicy
 	observer       Observer
 }
 
@@ -37,7 +36,8 @@ type WorkerConfig struct {
 	LockTTL        time.Duration
 	PublishTimeout time.Duration
 	MaxAttempts    int
-	Backoff        BackoffPolicy
+	BaseBackoff    time.Duration
+	MaxBackoff     time.Duration
 	Observer       Observer
 }
 
@@ -82,7 +82,8 @@ func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg Worker
 		return nil, fmt.Errorf("max attempts must be greater than zero")
 	}
 
-	if _, err := cfg.Backoff.Duration(0); err != nil {
+	backoff, err := newBackoffPolicy(cfg.BaseBackoff, cfg.MaxBackoff)
+	if err != nil {
 		return nil, fmt.Errorf("invalid backoff policy: %w", err)
 	}
 
@@ -100,8 +101,7 @@ func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg Worker
 		lockTTL:        cfg.LockTTL,
 		publishTimeout: cfg.PublishTimeout,
 		maxAttempts:    cfg.MaxAttempts,
-		backoff:        cfg.Backoff,
-		now:            time.Now,
+		backoff:        backoff,
 		observer:       observer,
 	}, nil
 }
@@ -202,7 +202,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 	publishCtx, cancel := context.WithTimeout(ctx, w.publishTimeout)
 	defer cancel()
 
-	started := w.now()
+	started := time.Now()
 	attemptNumber := event.Attempts + 1
 
 	w.logger.InfoContext(
@@ -218,7 +218,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 	)
 
 	publishErr := w.publisher.Publish(publishCtx, event)
-	duration := w.now().Sub(started)
+	duration := time.Since(started)
 	publishOutcome := classifyPublishOutcome(publishCtx, publishErr)
 	w.observer.ObservePublish(event.EventType, publishOutcome, duration)
 
@@ -275,11 +275,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 		return nil
 	}
 
-	retryDelay, err := w.backoff.Duration(event.Attempts)
-	if err != nil {
-		w.observer.ObserveOperationError(OperationCalculateBackoff)
-		return fmt.Errorf("calculate retry delay for event %q: %w", event.ID, err)
-	}
+	retryDelay := w.backoff.retryDelay(failedAttempts)
 
 	nextAvailableAt, err := w.store.ScheduleRetry(
 		ctx,
