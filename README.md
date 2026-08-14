@@ -47,7 +47,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the detailed consistency 
 
 Requirements:
 
-* Go 1.26.5
+* Go 1.26.6
 * Docker
 * Make
 
