@@ -22,11 +22,10 @@ const (
 type Operation string
 
 const (
-	OperationClaim            Operation = "claim"
-	OperationMarkPublished    Operation = "mark_published"
-	OperationScheduleRetry    Operation = "schedule_retry"
-	OperationMarkDeadLetter   Operation = "mark_dead_letter"
-	OperationCalculateBackoff Operation = "calculate_backoff"
+	OperationClaim          Operation = "claim"
+	OperationMarkPublished  Operation = "mark_published"
+	OperationScheduleRetry  Operation = "schedule_retry"
+	OperationMarkDeadLetter Operation = "mark_dead_letter"
 )
 
 // Observer receives bounded worker outcomes without event identifiers or raw errors.

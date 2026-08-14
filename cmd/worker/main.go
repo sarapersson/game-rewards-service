@@ -108,11 +108,9 @@ func run(ctx context.Context) int {
 			LockTTL:        cfg.Worker.OutboxLockTTL,
 			PublishTimeout: cfg.Worker.PublishTimeout,
 			MaxAttempts:    cfg.Worker.MaxAttempts,
-			Backoff: outbox.BackoffPolicy{
-				Base: cfg.Worker.BaseBackoff,
-				Max:  cfg.Worker.MaxBackoff,
-			},
-			Observer: workerMetrics,
+			BaseBackoff:    cfg.Worker.BaseBackoff,
+			MaxBackoff:     cfg.Worker.MaxBackoff,
+			Observer:       workerMetrics,
 		},
 	)
 	if err != nil {

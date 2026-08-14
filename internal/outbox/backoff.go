@@ -5,36 +5,40 @@ import (
 	"time"
 )
 
-type BackoffPolicy struct {
-	Base time.Duration
-	Max  time.Duration
+type backoffPolicy struct {
+	base time.Duration
+	max  time.Duration
 }
 
-func (p BackoffPolicy) Duration(attempts int) (time.Duration, error) {
-	if p.Base <= 0 {
-		return 0, fmt.Errorf("base backoff must be greater than zero")
+func newBackoffPolicy(base, max time.Duration) (backoffPolicy, error) {
+	if base <= 0 {
+		return backoffPolicy{}, fmt.Errorf("base backoff must be greater than zero")
 	}
 
-	if p.Max <= 0 {
-		return 0, fmt.Errorf("max backoff must be greater than zero")
+	if max <= 0 {
+		return backoffPolicy{}, fmt.Errorf("max backoff must be greater than zero")
 	}
 
-	if p.Max < p.Base {
-		return 0, fmt.Errorf("max backoff must be greater than or equal to base backoff")
+	if max < base {
+		return backoffPolicy{}, fmt.Errorf("max backoff must be greater than or equal to base backoff")
 	}
 
-	if attempts <= 0 {
-		return p.Base, nil
+	return backoffPolicy{base: base, max: max}, nil
+}
+
+func (p backoffPolicy) retryDelay(failedAttempts int) time.Duration {
+	if failedAttempts <= 1 {
+		return p.base
 	}
 
-	backoff := p.Base
-	for range attempts {
-		if backoff > p.Max-backoff {
-			return p.Max, nil
+	delay := p.base
+	for remaining := failedAttempts - 1; remaining > 0; remaining-- {
+		if delay > p.max-delay {
+			return p.max
 		}
 
-		backoff *= 2
+		delay *= 2
 	}
 
-	return backoff, nil
+	return delay
 }

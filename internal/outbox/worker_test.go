@@ -642,10 +642,8 @@ func TestNewWorkerRejectsInvalidConfig(t *testing.T) {
 		LockTTL:        30 * time.Second,
 		PublishTimeout: 5 * time.Second,
 		MaxAttempts:    5,
-		Backoff: BackoffPolicy{
-			Base: time.Second,
-			Max:  time.Minute,
-		},
+		BaseBackoff:    time.Second,
+		MaxBackoff:     time.Minute,
 	}
 
 	tests := []struct {
@@ -742,10 +740,8 @@ func TestNewWorkerRejectsInvalidConfig(t *testing.T) {
 			publisher: validPublisher,
 			logger:    validLogger,
 			config: mutateWorkerConfig(validConfig, func(cfg *WorkerConfig) {
-				cfg.Backoff = BackoffPolicy{
-					Base: time.Minute,
-					Max:  time.Second,
-				}
+				cfg.BaseBackoff = time.Minute
+				cfg.MaxBackoff = time.Second
 			}),
 		},
 	}
@@ -784,10 +780,8 @@ func newTestWorkerWithLogger(
 			LockTTL:        30 * time.Second,
 			PublishTimeout: 5 * time.Second,
 			MaxAttempts:    5,
-			Backoff: BackoffPolicy{
-				Base: time.Second,
-				Max:  time.Minute,
-			},
+			BaseBackoff:    time.Second,
+			MaxBackoff:     time.Minute,
 		},
 	)
 	if err != nil {
@@ -1043,11 +1037,9 @@ func newTestWorkerWithObserver(
 			LockTTL:        30 * time.Second,
 			PublishTimeout: 5 * time.Second,
 			MaxAttempts:    5,
-			Backoff: BackoffPolicy{
-				Base: time.Second,
-				Max:  time.Minute,
-			},
-			Observer: observer,
+			BaseBackoff:    time.Second,
+			MaxBackoff:     time.Minute,
+			Observer:       observer,
 		},
 	)
 	if err != nil {
