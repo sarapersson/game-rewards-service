@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -26,25 +27,27 @@ type ServerObservability struct {
 	RewardClaimObserver RewardClaimObserver
 }
 
-// NewServer builds the HTTP server without metric exposition. It is kept for focused tests.
-func NewServer(cfg config.Config, logger *slog.Logger, rewardClaims rewardClaimCreator, readinessChecks ...ReadinessCheck) *http.Server {
-	return NewServerWithObservability(cfg, logger, rewardClaims, ServerObservability{}, readinessChecks...)
-}
-
-// NewServerWithObservability builds the HTTP server with routes, middleware, metrics, and production-safe timeouts.
-func NewServerWithObservability(
+// NewServer builds the HTTP server with routes, middleware, metrics, and production-safe timeouts.
+func NewServer(
 	cfg config.Config,
 	logger *slog.Logger,
 	rewardClaims rewardClaimCreator,
 	observability ServerObservability,
 	readinessChecks ...ReadinessCheck,
-) *http.Server {
+) (*http.Server, error) {
+	if logger == nil {
+		return nil, errors.New("http logger is required")
+	}
+	if rewardClaims == nil {
+		return nil, errors.New("reward claim service is required")
+	}
+
 	return &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           newRouterWithObservability(logger, rewardClaims, observability, readinessChecks...),
+		Handler:           newRouter(logger, rewardClaims, observability, readinessChecks...),
 		ReadTimeout:       cfg.HTTP.ReadTimeout,
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
 		WriteTimeout:      cfg.HTTP.WriteTimeout,
 		IdleTimeout:       cfg.HTTP.IdleTimeout,
-	}
+	}, nil
 }

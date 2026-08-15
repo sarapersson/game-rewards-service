@@ -42,10 +42,21 @@ func (s *fakeStore) CreateClaim(_ context.Context, cmd CreateClaimStoreCommand) 
 	}, nil
 }
 
+func mustNewService(t *testing.T, store Store) *Service {
+	t.Helper()
+
+	service, err := NewService(store)
+	if err != nil {
+		t.Fatalf("NewService returned error: %v", err)
+	}
+
+	return service
+}
+
 func TestServiceCreateClaim(t *testing.T) {
 	store := &fakeStore{}
 
-	service := NewService(store)
+	service := mustNewService(t, store)
 
 	result, err := service.CreateClaim(context.Background(), CreateClaimCommand{
 		PlayerID:       " player-123 ",
@@ -134,7 +145,7 @@ func TestServiceCreateClaimReturnsValidStoreResultUnchanged(t *testing.T) {
 	}
 
 	store := &fakeStore{result: want}
-	service := NewService(store)
+	service := mustNewService(t, store)
 
 	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
 	if err != nil {
@@ -151,27 +162,6 @@ func TestServiceCreateClaimReturnsValidStoreResultUnchanged(t *testing.T) {
 
 	if !bytes.Equal(got.ResponseBody, want.ResponseBody) {
 		t.Fatalf("response body = %q, want %q", got.ResponseBody, want.ResponseBody)
-	}
-}
-
-func TestServiceCreateClaimRejectsInvalidStoreResult(t *testing.T) {
-	store := &fakeStore{result: CreateClaimResult{
-		StatusCode:   CreateClaimStatusCreated,
-		ResponseBody: []byte(`{}`),
-	}}
-	service := NewService(store)
-
-	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
-	if err == nil {
-		t.Fatal("CreateClaim returned nil error, want internal error")
-	}
-
-	if !errors.Is(err, ErrInternal) {
-		t.Fatalf("CreateClaim error = %v, want ErrInternal", err)
-	}
-
-	if got.StatusCode != 0 || got.ResponseBody != nil || got.Replayed {
-		t.Fatalf("CreateClaim result = %+v, want zero value", got)
 	}
 }
 
@@ -348,7 +338,7 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakeStore{}
-			service := NewService(store)
+			service := mustNewService(t, store)
 
 			_, err := service.CreateClaim(context.Background(), tt.cmd)
 			if err == nil {
@@ -385,7 +375,7 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 
 func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 	store := &fakeStore{}
-	service := NewService(store)
+	service := mustNewService(t, store)
 	maxLengthID := strings.Repeat("å", maxIDLength)
 
 	if _, err := service.CreateClaim(context.Background(), CreateClaimCommand{
@@ -416,7 +406,7 @@ func TestServiceCreateClaimReturnsDuplicateResult(t *testing.T) {
 	}
 	store := &fakeStore{result: want}
 
-	service := NewService(store)
+	service := mustNewService(t, store)
 
 	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
 	if err != nil {
@@ -434,16 +424,13 @@ func TestServiceCreateClaimReturnsDuplicateResult(t *testing.T) {
 	}
 }
 
-func TestServiceCreateClaimReturnsUnavailableWithoutStore(t *testing.T) {
-	service := NewService(nil)
-
-	_, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
+func TestNewServiceRequiresStore(t *testing.T) {
+	service, err := NewService(nil)
 	if err == nil {
-		t.Fatal("CreateClaim returned nil error, want unavailable error")
+		t.Fatal("NewService returned nil error")
 	}
-
-	if !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("CreateClaim error = %v, want ErrUnavailable", err)
+	if service != nil {
+		t.Fatalf("NewService service = %#v, want nil", service)
 	}
 }
 

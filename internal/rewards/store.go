@@ -39,15 +39,19 @@ type PostgresStore struct {
 	queryTimeout time.Duration
 }
 
-func NewPostgresStore(pool *pgxpool.Pool, queryTimeout time.Duration) *PostgresStore {
-	return &PostgresStore{pool: pool, queryTimeout: queryTimeout}
+func NewPostgresStore(pool *pgxpool.Pool, queryTimeout time.Duration) (*PostgresStore, error) {
+	if pool == nil {
+		return nil, errors.New("postgres reward claim pool is required")
+	}
+	if queryTimeout <= 0 {
+		return nil, errors.New("postgres reward claim query timeout must be greater than zero")
+	}
+
+	return &PostgresStore{pool: pool, queryTimeout: queryTimeout}, nil
 }
 
 func (s *PostgresStore) CreateClaim(ctx context.Context, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {
-	queryCtx, cancel, err := s.queryContext(ctx)
-	if err != nil {
-		return CreateClaimResult{}, err
-	}
+	queryCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 
 	tx, err := s.pool.BeginTx(queryCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -111,17 +115,8 @@ func (s *PostgresStore) rollbackTransaction(tx pgx.Tx) {
 	_ = tx.Rollback(rollbackCtx)
 }
 
-func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if s == nil || s.pool == nil {
-		return nil, nil, ErrUnavailable
-	}
-
-	if s.queryTimeout <= 0 {
-		return nil, nil, fmt.Errorf("reward claims store query timeout must be greater than zero: %w", ErrInternal)
-	}
-
-	queryCtx, cancel := context.WithTimeoutCause(ctx, s.queryTimeout, errPostgresQueryTimeout)
-	return queryCtx, cancel, nil
+func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, s.queryTimeout, errPostgresQueryTimeout)
 }
 
 func tryReserveIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (bool, error) {
@@ -147,7 +142,7 @@ ON CONFLICT (operation, key_hash) DO NOTHING`
 
 func replayIdempotentClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {
 	const query = `
-SELECT request_hash, state, response_status, response_body
+SELECT request_hash, state, response_status, response_body, reward_claim_id::text
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`
 
@@ -156,6 +151,7 @@ WHERE operation = $1 AND key_hash = $2`
 		state          string
 		responseStatus sql.NullInt64
 		responseBody   []byte
+		rewardClaimID  sql.NullString
 	)
 
 	err := tx.QueryRow(ctx, query, cmd.Operation, cmd.KeyHash).Scan(
@@ -163,6 +159,7 @@ WHERE operation = $1 AND key_hash = $2`
 		&state,
 		&responseStatus,
 		&responseBody,
+		&rewardClaimID,
 	)
 	if err != nil {
 		return CreateClaimResult{}, mapPostgresError(ctx, err)
@@ -180,11 +177,21 @@ WHERE operation = $1 AND key_hash = $2`
 		return CreateClaimResult{}, fmt.Errorf("completed idempotency key missing stored response: %w", ErrInternal)
 	}
 
-	return CreateClaimResult{
+	result := CreateClaimResult{
 		StatusCode:   int(responseStatus.Int64),
 		ResponseBody: responseBody,
 		Replayed:     true,
-	}, nil
+	}
+	if err := validateStoredCreateClaimResponse(
+		result.StatusCode,
+		result.ResponseBody,
+		cmd.Claim,
+		rewardClaimID.String,
+	); err != nil {
+		return CreateClaimResult{}, err
+	}
+
+	return result, nil
 }
 
 func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd CreateClaimStoreCommand, claim Claim) (CreateClaimResult, error) {

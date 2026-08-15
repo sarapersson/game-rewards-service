@@ -77,10 +77,19 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
-	rewardStore := rewards.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
-	rewardService := rewards.NewService(rewardStore)
+	rewardStore, err := rewards.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
+	if err != nil {
+		logger.Error("create reward claim store", slog.Any("error", err))
+		return 1
+	}
 
-	server := httpapi.NewServerWithObservability(
+	rewardService, err := rewards.NewService(rewardStore)
+	if err != nil {
+		logger.Error("create reward claim service", slog.Any("error", err))
+		return 1
+	}
+
+	server, err := httpapi.NewServer(
 		cfg,
 		logger,
 		rewardService,
@@ -96,6 +105,10 @@ func run(ctx context.Context) int {
 			},
 		},
 	)
+	if err != nil {
+		logger.Error("create HTTP server", slog.Any("error", err))
+		return 1
+	}
 
 	if ctx.Err() != nil {
 		return 0

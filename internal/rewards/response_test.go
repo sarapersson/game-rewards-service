@@ -12,17 +12,16 @@ const (
 	responseTestClaimedAt = "2026-08-11T12:00:00.123456Z"
 )
 
-func TestValidateCreateClaimResultAcceptsValidResults(t *testing.T) {
+func TestValidateStoredCreateClaimResponseAcceptsCompatibleResponses(t *testing.T) {
 	claim := responseValidationClaim()
 	created := responseForClaim(claim)
-	replayed := created
-	replayed.ClaimID = responseTestReplayID
+	created.ClaimID = responseTestReplayID
 
 	duplicateBody, err := MarshalDuplicateClaimResponse()
 	if err != nil {
 		t.Fatalf("MarshalDuplicateClaimResponse returned error: %v", err)
 	}
-	replayedDuplicateBody := mustJSON(t, errorResponse{
+	compatibleDuplicateBody := mustJSON(t, errorResponse{
 		Error: errorBody{
 			Code:    DuplicateClaimErrorCode,
 			Message: "Reward was already claimed",
@@ -30,61 +29,45 @@ func TestValidateCreateClaimResultAcceptsValidResults(t *testing.T) {
 	})
 
 	tests := []struct {
-		name   string
-		result CreateClaimResult
+		name          string
+		statusCode    int
+		body          []byte
+		linkedClaimID string
 	}{
 		{
-			name: "created",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: mustJSON(t, created),
-			},
+			name:          "created",
+			statusCode:    CreateClaimStatusCreated,
+			body:          mustJSON(t, created),
+			linkedClaimID: responseTestReplayID,
 		},
 		{
-			name: "replayed created",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: mustJSON(t, replayed),
-				Replayed:     true,
-			},
+			name:       "duplicate",
+			statusCode: CreateClaimStatusConflict,
+			body:       duplicateBody,
 		},
 		{
-			name: "duplicate",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusConflict,
-				ResponseBody: duplicateBody,
-			},
-		},
-		{
-			name: "replayed duplicate with compatible message",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusConflict,
-				ResponseBody: replayedDuplicateBody,
-				Replayed:     true,
-			},
+			name:       "duplicate with compatible historical message",
+			statusCode: CreateClaimStatusConflict,
+			body:       compatibleDuplicateBody,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateCreateClaimResult(tt.result, claim); err != nil {
-				t.Fatalf("validateCreateClaimResult returned error: %v", err)
+			if err := validateStoredCreateClaimResponse(tt.statusCode, tt.body, claim, tt.linkedClaimID); err != nil {
+				t.Fatalf("validateStoredCreateClaimResponse returned error: %v", err)
 			}
 		})
 	}
 }
 
-func TestValidateCreateClaimResultRejectsInvalidResults(t *testing.T) {
+func TestValidateStoredCreateClaimResponseRejectsInvalidResponses(t *testing.T) {
 	claim := responseValidationClaim()
 	validCreated := responseForClaim(claim)
 	validCreatedBody := mustJSON(t, validCreated)
 
-	mismatchedNewClaimID := validCreated
-	mismatchedNewClaimID.ClaimID = responseTestReplayID
-
-	mismatchedReplay := validCreated
-	mismatchedReplay.ClaimID = responseTestReplayID
-	mismatchedReplay.PlayerID = "other-player"
+	mismatchedRequest := validCreated
+	mismatchedRequest.PlayerID = "other-player"
 
 	wrongStatus := validCreated
 	wrongStatus.Status = "pending"
@@ -93,114 +76,109 @@ func TestValidateCreateClaimResultRejectsInvalidResults(t *testing.T) {
 	invalidClaimedAt.ClaimedAt = "not-a-time"
 
 	tests := []struct {
-		name   string
-		result CreateClaimResult
+		name          string
+		statusCode    int
+		body          []byte
+		linkedClaimID string
 	}{
 		{
-			name: "unsupported status",
-			result: CreateClaimResult{
-				StatusCode:   200,
-				ResponseBody: validCreatedBody,
-			},
+			name:       "unsupported status",
+			statusCode: 200,
+			body:       validCreatedBody,
 		},
 		{
-			name: "empty body",
-			result: CreateClaimResult{
-				StatusCode: CreateClaimStatusCreated,
-			},
+			name:       "created missing claim link",
+			statusCode: CreateClaimStatusCreated,
+			body:       validCreatedBody,
 		},
 		{
-			name: "malformed JSON",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: []byte(`{"claim_id":`),
-			},
+			name:          "created mismatched claim link",
+			statusCode:    CreateClaimStatusCreated,
+			body:          validCreatedBody,
+			linkedClaimID: responseTestReplayID,
 		},
 		{
-			name: "invalid UTF-8",
-			result: CreateClaimResult{
-				StatusCode: CreateClaimStatusConflict,
-				ResponseBody: []byte(
-					"{\"error\":{\"code\":\"reward_already_claimed\",\"message\":\"\xff\"}}",
-				),
-			},
+			name:          "duplicate with claim link",
+			statusCode:    CreateClaimStatusConflict,
+			body:          []byte(`{"error":{"code":"reward_already_claimed","message":"Reward has already been claimed"}}`),
+			linkedClaimID: responseTestClaimID,
 		},
 		{
-			name: "trailing JSON value",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: append(append([]byte(nil), validCreatedBody...), []byte(`{}`)...),
-			},
+			name:          "empty body",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
 		},
 		{
-			name: "created empty object",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: []byte(`{}`),
-			},
+			name:          "malformed JSON",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body:          []byte(`{"claim_id":`),
 		},
 		{
-			name: "created unknown field",
-			result: CreateClaimResult{
-				StatusCode: CreateClaimStatusCreated,
-				ResponseBody: []byte(`{"claim_id":"` + responseTestClaimID +
-					`","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","status":"claimed","claimed_at":"` + responseTestClaimedAt + `","extra":true}`),
-			},
+			name:       "invalid UTF-8",
+			statusCode: CreateClaimStatusConflict,
+			body: []byte(
+				"{\"error\":{\"code\":\"reward_already_claimed\",\"message\":\"\xff\"}}",
+			),
 		},
 		{
-			name: "created mismatched new claim ID",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: mustJSON(t, mismatchedNewClaimID),
-			},
+			name:          "trailing JSON value",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body:          append(append([]byte(nil), validCreatedBody...), []byte(`{}`)...),
 		},
 		{
-			name: "replayed created mismatched request",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: mustJSON(t, mismatchedReplay),
-				Replayed:     true,
-			},
+			name:          "created empty object",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body:          []byte(`{}`),
 		},
 		{
-			name: "created wrong status",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: mustJSON(t, wrongStatus),
-			},
+			name:          "created unknown field",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body: []byte(`{"claim_id":"` + responseTestClaimID +
+				`","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","status":"claimed","claimed_at":"` + responseTestClaimedAt + `","extra":true}`),
 		},
 		{
-			name: "created invalid claimed_at",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusCreated,
-				ResponseBody: mustJSON(t, invalidClaimedAt),
-			},
+			name:          "created mismatched request",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body:          mustJSON(t, mismatchedRequest),
 		},
 		{
-			name: "duplicate missing message",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusConflict,
-				ResponseBody: []byte(`{"error":{"code":"reward_already_claimed"}}`),
-			},
+			name:          "created wrong status",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body:          mustJSON(t, wrongStatus),
 		},
 		{
-			name: "duplicate wrong code",
-			result: CreateClaimResult{
-				StatusCode:   CreateClaimStatusConflict,
-				ResponseBody: []byte(`{"error":{"code":"idempotency_key_reused","message":"Reward has already been claimed"}}`),
-			},
+			name:          "created invalid claimed_at",
+			statusCode:    CreateClaimStatusCreated,
+			linkedClaimID: responseTestClaimID,
+			body:          mustJSON(t, invalidClaimedAt),
+		},
+		{
+			name:       "duplicate missing message",
+			statusCode: CreateClaimStatusConflict,
+			body:       []byte(`{"error":{"code":"reward_already_claimed"}}`),
+		},
+		{
+			name:       "duplicate wrong code",
+			statusCode: CreateClaimStatusConflict,
+			body:       []byte(`{"error":{"code":"idempotency_key_reused","message":"Reward has already been claimed"}}`),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateCreateClaimResult(tt.result, claim)
+			err := validateStoredCreateClaimResponse(tt.statusCode, tt.body, claim, tt.linkedClaimID)
 			if err == nil {
-				t.Fatal("validateCreateClaimResult returned nil error")
+				t.Fatal("validateStoredCreateClaimResponse returned nil error")
 			}
 
 			if !errors.Is(err, ErrInternal) {
-				t.Fatalf("validateCreateClaimResult error = %v, want ErrInternal", err)
+				t.Fatalf("validateStoredCreateClaimResponse error = %v, want ErrInternal", err)
 			}
 		})
 	}

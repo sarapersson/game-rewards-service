@@ -60,7 +60,7 @@ func TestRewardClaimsHandlerRejectsUnsupportedMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, routeRewardClaims, nil)
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+	testRewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
@@ -71,25 +71,12 @@ func TestRewardClaimsHandlerRejectsUnsupportedMethod(t *testing.T) {
 	}
 }
 
-func TestRewardClaimsHandlerRequiresService(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(`{}`))
-	req.Header.Set(headerIdempotencyKey, "claim-key-123")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	rewardClaimsHandler(nil).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-}
-
 func TestRewardClaimsHandlerRequiresIdempotencyKey(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+	testRewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -136,7 +123,7 @@ func TestRewardClaimsHandlerRejectsInvalidIdempotencyKey(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			rewardClaimsHandler(service).ServeHTTP(rec, req)
+			testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -161,7 +148,7 @@ func TestRewardClaimsHandlerRejectsMultipleIdempotencyKeys(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -182,7 +169,7 @@ func TestRewardClaimsHandlerRequiresJSONContentType(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+	testRewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnsupportedMediaType)
@@ -209,7 +196,7 @@ func TestRewardClaimsHandlerAcceptsJSONContentTypeWithCharset(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
@@ -261,7 +248,7 @@ func TestRewardClaimsHandlerRejectsInvalidJSONBody(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			rewardClaimsHandler(service).ServeHTTP(rec, req)
+			testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
@@ -338,13 +325,13 @@ func TestRewardClaimsHandlerMapsClaimValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			service := rewards.NewService(nil)
+			service := mustNewRewardService(t, unexpectedRewardStore{})
 			req := httptest.NewRequest(http.MethodPost, routeRewardClaims, strings.NewReader(tt.body))
 			req.Header.Set(headerIdempotencyKey, "claim-key-123")
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			rewardClaimsHandler(service).ServeHTTP(rec, req)
+			testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -370,7 +357,7 @@ func TestRewardClaimsHandlerRejectsInvalidUTF8(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -395,7 +382,7 @@ func TestRewardClaimsHandlerRejectsLargeBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
+	testRewardClaimsHandler(fakeRewardClaimService{}).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
@@ -416,7 +403,7 @@ func TestRewardClaimsHandlerRejectsLargeBodyAfterValidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
@@ -457,7 +444,7 @@ func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
@@ -533,7 +520,7 @@ func TestRewardClaimsHandlerWritesReplayHeader(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusConflict, rec.Body.String())
@@ -608,7 +595,7 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			rewardClaimsHandler(service).ServeHTTP(rec, req)
+			testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
@@ -643,7 +630,7 @@ func TestRewardClaimsHandlerDoesNotWriteAfterRequestCancellation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandlerWithLogger(logger, service, observer).ServeHTTP(rec, req)
+	rewardClaimsHandler(logger, service, observer).ServeHTTP(rec, req)
 
 	if rec.Body.Len() != 0 {
 		t.Fatalf("response body = %q, want no response body", rec.Body.String())
@@ -674,7 +661,7 @@ func TestRewardClaimsHandlerDoesNotExposeServiceErrorDetails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
@@ -711,7 +698,7 @@ func TestRewardClaimsHandlerLogsSafeInternalError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandlerWithLogger(logger, service).ServeHTTP(rec, req)
+	rewardClaimsHandler(logger, service, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
@@ -764,7 +751,7 @@ func TestRewardClaimsHandlerObservesServiceOutcome(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service, observer).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service, observer).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rec.Code)
@@ -777,7 +764,7 @@ func TestRewardClaimsHandlerObservesServiceOutcome(t *testing.T) {
 
 func TestRewardClaimsHandlerDoesNotObserveClaimValidation(t *testing.T) {
 	observer := &recordingRewardObserver{}
-	service := rewards.NewService(nil)
+	service := mustNewRewardService(t, unexpectedRewardStore{})
 	req := httptest.NewRequest(
 		http.MethodPost,
 		routeRewardClaims,
@@ -787,7 +774,7 @@ func TestRewardClaimsHandlerDoesNotObserveClaimValidation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(service, observer).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service, observer).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -804,7 +791,7 @@ func TestRewardClaimsHandlerDoesNotObserveTransportValidation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	rewardClaimsHandler(fakeRewardClaimService{}, observer).ServeHTTP(rec, req)
+	testRewardClaimsHandler(fakeRewardClaimService{}, observer).ServeHTTP(rec, req)
 
 	if observer.called {
 		t.Fatal("transport validation must not be recorded as a service operation")

@@ -25,8 +25,11 @@ const (
 
 func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 	pool := openHTTPIntegrationPool(t)
-	store := rewards.NewPostgresStore(pool, 2*time.Second)
-	service := rewards.NewService(store)
+	store, err := rewards.NewPostgresStore(pool, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPostgresStore returned error: %v", err)
+	}
+	service := mustNewRewardService(t, store)
 
 	testName := strings.ReplaceAll(t.Name(), "/", "-")
 	playerID := "player-" + testName
@@ -126,8 +129,11 @@ WHERE aggregate_type = $1
 
 func TestRewardClaimsHandlerTreatsCommittedProcessingIdempotencyAsInternal(t *testing.T) {
 	pool := openHTTPIntegrationPool(t)
-	store := rewards.NewPostgresStore(pool, 2*time.Second)
-	service := rewards.NewService(store)
+	store, err := rewards.NewPostgresStore(pool, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPostgresStore returned error: %v", err)
+	}
+	service := mustNewRewardService(t, store)
 
 	testName := strings.ReplaceAll(t.Name(), "/", "-")
 	playerID := "player-" + testName
@@ -187,7 +193,7 @@ func performRewardClaimRequest(t *testing.T, service rewardClaimCreator, idempot
 	req.Header.Set("Content-Type", "application/json")
 
 	rec := httptest.NewRecorder()
-	rewardClaimsHandler(service).ServeHTTP(rec, req)
+	testRewardClaimsHandler(service).ServeHTTP(rec, req)
 
 	return rec
 }
