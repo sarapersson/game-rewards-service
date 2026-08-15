@@ -16,10 +16,12 @@ paths:
         Creates a reward claim for a player within a campaign.
 
         Exactly one `Idempotency-Key` header value is required. Surrounding
-        whitespace is trimmed before validation and hashing. Repeating the same
-        normalized key with the same accepted request replays the stored response;
-        reusing it with a different accepted request returns
-        `409 idempotency_key_reused`.
+        whitespace is trimmed before validation and hashing. While a completed
+        idempotency record is retained, repeating the same normalized key with the
+        same accepted request replays the stored response; using the same key for a
+        different accepted request returns `409 idempotency_key_reused`. Completed
+        records become eligible for routine cleanup 24 hours after creation, so
+        clients must not rely on replay or key-reuse detection beyond that window.
 
         Business duplicate prevention is separate from idempotency. A different
         key for the same `(player_id, campaign_id, reward_id)` returns

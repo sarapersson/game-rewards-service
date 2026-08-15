@@ -175,7 +175,9 @@ The service does not run automatic cleanup jobs.
 
 ### Completed idempotency records
 
-Only completed records whose `expires_at` has passed are candidates for routine cleanup. Deleting one removes its stored deterministic replay history.
+Only completed records whose `expires_at` has passed are candidates for routine cleanup.
+
+`expires_at` is a cleanup boundary only; request handling does not treat a retained record as expired, so it continues to replay after `expires_at` until it is deleted. Deleting one removes its stored deterministic replay history. A later request can reserve the same key again and is evaluated against current business state rather than replaying the deleted response.
 
 Inspect first:
 

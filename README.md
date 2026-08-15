@@ -88,7 +88,7 @@ A successful request returns `201 Created`:
 }
 ```
 
-Retry the same accepted request with the same `Idempotency-Key` to receive the stored response. Replays include:
+While its completed idempotency record is retained, retry the same accepted request with the same `Idempotency-Key` to receive the stored response. Replays include:
 
 ```text
 Idempotent-Replayed: true
@@ -110,12 +110,14 @@ The three identifiers are trimmed, required, and limited to 128 Unicode characte
 | Scenario                                       | Result                                               |
 | ---------------------------------------------- | ---------------------------------------------------- |
 | New valid claim                                | `201 Created`                                        |
-| Same key + same accepted request               | stored response replay                               |
-| Same key + different accepted request          | `409 idempotency_key_reused`                         |
+| Same key + same accepted request               | stored response replay while the record is retained  |
+| Same key + different accepted request          | `409 idempotency_key_reused` while retained          |
 | Different key + same player/campaign/reward    | `409 reward_already_claimed`                         |
 | Invalid input                                  | `400`, `413`, or `415`                               |
 | Known PostgreSQL availability failure          | `503 service_unavailable`                            |
 | Unexpected internal failure                    | `500 internal_error`                                 |
+
+Completed idempotency records become eligible for routine cleanup 24 hours after creation. The service does not run automatic cleanup; once a record is deleted, its key-level replay and reuse history is no longer available.
 
 Errors use the stable envelope:
 
