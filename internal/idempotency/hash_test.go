@@ -3,6 +3,7 @@ package idempotency
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -100,27 +101,47 @@ func TestHashKeyNormalizesWhitespace(t *testing.T) {
 	}
 }
 
-func TestHashRewardClaimRequest(t *testing.T) {
+func TestHashRewardClaimRequestGolden(t *testing.T) {
 	t.Parallel()
 
-	req := RewardClaimRequest{
-		PlayerID:   "player-123",
-		CampaignID: "winter-2026",
-		RewardID:   "daily-login",
+	tests := []struct {
+		name string
+		req  RewardClaimRequest
+		want string
+	}{
+		{
+			name: "ascii",
+			req: RewardClaimRequest{
+				PlayerID:   "player-123",
+				CampaignID: "winter-2026",
+				RewardID:   "daily-login",
+			},
+			want: "cd84caeff213fb51dcdd9e357e8c3eefbeee12a0ec7a6b3e6dd086f7dc6111ec",
+		},
+		{
+			name: "unicode and JSON escaping",
+			req: RewardClaimRequest{
+				PlayerID:   "spelare-å",
+				CampaignID: `winter-"2026"`,
+				RewardID:   `daily\login<&`,
+			},
+			want: "e576e0097be5f7dd5d6ac9906490671d84c8ebb3eac71d9d51bfbbddefb1858b",
+		},
 	}
 
-	a, err := HashRewardClaimRequest(req)
-	if err != nil {
-		t.Fatalf("HashRewardClaimRequest() error = %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	b, err := HashRewardClaimRequest(req)
-	if err != nil {
-		t.Fatalf("HashRewardClaimRequest() error = %v", err)
-	}
+			got, err := HashRewardClaimRequest(tt.req)
+			if err != nil {
+				t.Fatalf("HashRewardClaimRequest() error = %v", err)
+			}
 
-	if a != b {
-		t.Fatal("HashRewardClaimRequest() should be deterministic")
+			if gotHex := fmt.Sprintf("%x", got); gotHex != tt.want {
+				t.Fatalf("HashRewardClaimRequest() = %s, want %s", gotHex, tt.want)
+			}
+		})
 	}
 }
 

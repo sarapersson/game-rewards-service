@@ -39,8 +39,8 @@ The design deliberately separates client retry idempotency, business-level rewar
 
 **Client retries** use `Idempotency-Key`:
 
-* same normalized key + same accepted request -> replay the stored response;
-* same normalized key + different accepted request -> `409 idempotency_key_reused`.
+* same normalized key + same accepted request -> replay the stored response while the completed idempotency record is retained;
+* same normalized key + different accepted request -> `409 idempotency_key_reused` while that record is retained.
 
 The `processing` state exists only inside the reward-claim transaction while its deterministic response is being established. A committed idempotency row that remains in `processing` violates that transaction invariant and is surfaced as `500 internal_error`, not as a retryable client conflict.
 
@@ -53,6 +53,10 @@ UNIQUE (player_id, campaign_id, reward_id)
 ```
 
 A different idempotency key cannot bypass that invariant. The resulting `409 reward_already_claimed` response is stored for deterministic replay under the key that produced it.
+
+Replay retention is intentionally separate from request handling. Completed idempotency records become eligible for routine cleanup 24 hours after creation, but `expires_at` is not a request-time expiry check: a retained completed record continues to replay until it is deleted. After cleanup, the stored key-level replay and reuse history is gone and a subsequent request is evaluated against current business state.
+
+The normalized accepted request is serialized using a versioned canonical representation and persisted as its SHA-256 `request_hash`. That fingerprint format is persistent compatibility state: changing its canonicalization or hash semantics across deployments requires deliberate compatibility, rollout, and rollback handling for existing rows.
 
 Raw idempotency keys are not persisted; PostgreSQL stores the operation and SHA-256 key hash.
 
