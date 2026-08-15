@@ -11,11 +11,7 @@ const (
 	routeMetrics = "/metrics"
 )
 
-func newRouter(logger *slog.Logger, rewardClaims rewardClaimCreator, readinessChecks ...ReadinessCheck) http.Handler {
-	return newRouterWithObservability(logger, rewardClaims, ServerObservability{}, readinessChecks...)
-}
-
-func newRouterWithObservability(
+func newRouter(
 	logger *slog.Logger,
 	rewardClaims rewardClaimCreator,
 	observability ServerObservability,
@@ -30,7 +26,7 @@ func newRouterWithObservability(
 	}
 	mux.HandleFunc(
 		routeRewardClaims,
-		rewardClaimsHandlerWithLogger(logger, rewardClaims, observability.RewardClaimObserver),
+		rewardClaimsHandler(logger, rewardClaims, observability.RewardClaimObserver),
 	)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, errorCodeNotFound, "Not found")

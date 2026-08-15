@@ -34,39 +34,44 @@ type errorBody struct {
 	Message string `json:"message"`
 }
 
-func validateCreateClaimResult(result CreateClaimResult, claim Claim) error {
-	switch result.StatusCode {
+func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, claim Claim, linkedClaimID string) error {
+	switch statusCode {
 	case CreateClaimStatusCreated:
 		var response createClaimResponse
-		if !decodeStrictJSONResponse(result.ResponseBody, &response) {
-			return fmt.Errorf("invalid created reward claim response body: %w", ErrInternal)
+		if !decodeStrictJSONResponse(responseBody, &response) {
+			return fmt.Errorf("invalid stored reward claim response body: %w", ErrInternal)
 		}
 
-		if !validUUID(response.ClaimID) ||
-			(!result.Replayed && response.ClaimID != claim.ID) ||
+		if linkedClaimID == "" ||
+			response.ClaimID != linkedClaimID ||
+			!validUUID(response.ClaimID) ||
 			response.PlayerID != claim.PlayerID ||
 			response.CampaignID != claim.CampaignID ||
 			response.RewardID != claim.RewardID ||
 			response.Status != ClaimStatusClaimed {
-			return fmt.Errorf("created reward claim response does not match claim: %w", ErrInternal)
+			return fmt.Errorf("stored reward claim response does not match request: %w", ErrInternal)
 		}
 
 		if _, err := time.Parse(time.RFC3339Nano, response.ClaimedAt); err != nil {
-			return fmt.Errorf("created reward claim response has invalid claimed_at: %w", ErrInternal)
+			return fmt.Errorf("stored reward claim response has invalid claimed_at: %w", ErrInternal)
 		}
 
 	case CreateClaimStatusConflict:
+		if linkedClaimID != "" {
+			return fmt.Errorf("stored duplicate reward claim response has claim link: %w", ErrInternal)
+		}
+
 		var response errorResponse
-		if !decodeStrictJSONResponse(result.ResponseBody, &response) {
-			return fmt.Errorf("invalid duplicate reward claim response body: %w", ErrInternal)
+		if !decodeStrictJSONResponse(responseBody, &response) {
+			return fmt.Errorf("invalid stored duplicate reward claim response body: %w", ErrInternal)
 		}
 
 		if response.Error.Code != DuplicateClaimErrorCode || response.Error.Message == "" {
-			return fmt.Errorf("unexpected duplicate reward claim response: %w", ErrInternal)
+			return fmt.Errorf("unexpected stored duplicate reward claim response: %w", ErrInternal)
 		}
 
 	default:
-		return fmt.Errorf("unexpected reward claim response status %d: %w", result.StatusCode, ErrInternal)
+		return fmt.Errorf("unexpected stored reward claim response status %d: %w", statusCode, ErrInternal)
 	}
 
 	return nil

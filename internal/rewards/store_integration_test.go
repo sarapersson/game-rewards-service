@@ -24,7 +24,7 @@ const defaultIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_
 
 func TestPostgresStoreCreateClaimAllowsSameRewardInDifferentCampaigns(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -93,7 +93,7 @@ WHERE player_id = $1
 
 func TestPostgresStoreCreateClaimPreservesCanceledCaller(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	cmd := newIntegrationCreateClaimCommand(
@@ -118,7 +118,7 @@ func TestPostgresStoreCreateClaimPreservesCanceledCaller(t *testing.T) {
 
 func TestPostgresStoreCreateClaimPreservesExpiredCallerDeadline(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	cmd := newIntegrationCreateClaimCommand(
@@ -141,28 +141,9 @@ func TestPostgresStoreCreateClaimPreservesExpiredCallerDeadline(t *testing.T) {
 	}
 }
 
-func TestPostgresStoreCreateClaimRejectsInvalidQueryTimeout(t *testing.T) {
-	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 0)
-
-	testName := integrationTestName(t)
-	cmd := newIntegrationCreateClaimCommand(
-		t,
-		"claim-key-"+testName,
-		"player-"+testName,
-		"campaign-"+testName,
-		"reward-"+testName,
-	)
-
-	_, err := store.CreateClaim(context.Background(), cmd)
-	if !errors.Is(err, ErrInternal) {
-		t.Fatalf("CreateClaim error = %v, want ErrInternal", err)
-	}
-}
-
 func TestPostgresStoreCreateClaimCompletesIdempotencyKey(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -247,7 +228,7 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 
 func TestPostgresStoreCreateClaimReplaysCompletedResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -304,7 +285,7 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 
 func TestPostgresStoreCreateClaimRejectsKeyReuseWithDifferentPayload(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -351,7 +332,7 @@ WHERE player_id = $1 AND campaign_id = $2`,
 
 func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -442,7 +423,7 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 
 func TestPostgresStoreCreateClaimReplaysDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -505,7 +486,7 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 
 func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 5*time.Second)
+	store := mustNewPostgresStore(t, pool, 5*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -679,7 +660,7 @@ WHERE operation = $1 AND request_hash = $2`,
 
 func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 5*time.Second)
+	store := mustNewPostgresStore(t, pool, 5*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -846,7 +827,7 @@ func TestPostgresStoreCreateClaimTreatsCommittedProcessingKeyAsInternal(t *testi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pool := openIntegrationPool(t)
-			store := NewPostgresStore(pool, 2*time.Second)
+			store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 			testName := integrationTestName(t)
 			playerID := "player-" + testName
@@ -903,9 +884,76 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
+func TestPostgresStoreCreateClaimRejectsInvalidStoredReplay(t *testing.T) {
+	pool := openIntegrationPool(t)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
+
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+
+	storedClaim := cmd.Claim
+	storedClaim.CreatedAt = time.Now().UTC()
+	storedBody, err := MarshalCreatedClaimResponse(storedClaim)
+	if err != nil {
+		t.Fatalf("MarshalCreatedClaimResponse returned error: %v", err)
+	}
+
+	_, err = pool.Exec(
+		context.Background(),
+		`
+INSERT INTO idempotency_keys (
+    operation,
+    key_hash,
+    request_hash,
+    state,
+    response_status,
+    response_body,
+    completed_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, now())`,
+		cmd.Operation,
+		cmd.KeyHash,
+		cmd.RequestHash,
+		idempotencyStateCompleted,
+		CreateClaimStatusCreated,
+		storedBody,
+	)
+	if err != nil {
+		t.Fatalf("seed invalid completed idempotency key: %v", err)
+	}
+
+	_, err = store.CreateClaim(context.Background(), cmd)
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
+	}
+
+	var claimCount int
+	err = pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM reward_claims
+WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
+		playerID,
+		campaignID,
+		rewardID,
+	).Scan(&claimCount)
+	if err != nil {
+		t.Fatalf("count reward claims: %v", err)
+	}
+	if claimCount != 0 {
+		t.Fatalf("reward claim count = %d, want 0", claimCount)
+	}
+}
+
 func TestPostgresStoreCreateClaimCreatesRewardClaimedOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -1015,7 +1063,7 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 
 func TestPostgresStoreCreateClaimRollsBackWhenOutboxInsertFails(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -1120,7 +1168,7 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 
 func TestPostgresStoreCreateClaimReplayDoesNotCreateSecondOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -1180,7 +1228,7 @@ WHERE aggregate_type = $1
 
 func TestPostgresStoreCreateClaimDuplicateRewardDoesNotCreateOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -1236,7 +1284,7 @@ WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
 
 func TestPostgresStoreCreateClaimKeyMismatchDoesNotCreateOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, 2*time.Second)
+	store := mustNewPostgresStore(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName

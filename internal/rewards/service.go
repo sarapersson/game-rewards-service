@@ -2,6 +2,7 @@ package rewards
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -17,8 +18,12 @@ type Service struct {
 	store Store
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
+func NewService(store Store) (*Service, error) {
+	if store == nil {
+		return nil, errors.New("reward claim store is required")
+	}
+
+	return &Service{store: store}, nil
 }
 
 func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (CreateClaimResult, error) {
@@ -29,10 +34,6 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 
 	if err := validateCreateClaimCommand(cmd); err != nil {
 		return CreateClaimResult{}, err
-	}
-
-	if s == nil || s.store == nil {
-		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", ErrUnavailable)
 	}
 
 	keyHash, err := idempotency.HashKey(cmd.IdempotencyKey)
@@ -69,10 +70,6 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 		RequestHash: requestHash[:],
 	})
 	if err != nil {
-		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
-	}
-
-	if err := validateCreateClaimResult(result, claim); err != nil {
 		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
 	}
 

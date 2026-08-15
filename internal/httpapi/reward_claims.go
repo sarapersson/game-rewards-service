@@ -44,23 +44,14 @@ type createRewardClaimRequest struct {
 	RewardID   string `json:"reward_id"`
 }
 
-func rewardClaimsHandler(service rewardClaimCreator, observers ...RewardClaimObserver) http.HandlerFunc {
-	return rewardClaimsHandlerWithLogger(nil, service, observers...)
-}
-
-func rewardClaimsHandlerWithLogger(
+func rewardClaimsHandler(
 	logger *slog.Logger,
 	service rewardClaimCreator,
-	observers ...RewardClaimObserver,
+	observer RewardClaimObserver,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
-			return
-		}
-
-		if service == nil {
-			writeError(w, http.StatusServiceUnavailable, errorCodeUnavailable, "Service unavailable")
 			return
 		}
 
@@ -91,12 +82,8 @@ func rewardClaimsHandlerWithLogger(
 			RewardID:       req.RewardID,
 			IdempotencyKey: idempotencyKey,
 		})
-		if !rewards.IsValidationError(err) {
-			for _, observer := range observers {
-				if observer != nil {
-					observer.ObserveRewardClaim(result, err)
-				}
-			}
+		if !rewards.IsValidationError(err) && observer != nil {
+			observer.ObserveRewardClaim(result, err)
 		}
 		if err != nil {
 			if isRequestContextError(r, err) {
@@ -230,10 +217,6 @@ func writeDecodeError(w http.ResponseWriter, err error) {
 }
 
 func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
-	if logger == nil {
-		return
-	}
-
 	level := slog.LevelError
 	errorClass := "unexpected"
 	switch {

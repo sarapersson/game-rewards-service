@@ -24,6 +24,40 @@ func (tx *rollbackTestTx) Rollback(ctx context.Context) error {
 	return tx.rollbackFn(ctx)
 }
 
+func mustNewPostgresStore(t *testing.T, pool *pgxpool.Pool, queryTimeout time.Duration) *PostgresStore {
+	t.Helper()
+
+	store, err := NewPostgresStore(pool, queryTimeout)
+	if err != nil {
+		t.Fatalf("NewPostgresStore returned error: %v", err)
+	}
+
+	return store
+}
+
+func TestNewPostgresStoreValidatesConstruction(t *testing.T) {
+	tests := []struct {
+		name         string
+		pool         *pgxpool.Pool
+		queryTimeout time.Duration
+	}{
+		{name: "missing pool", queryTimeout: time.Second},
+		{name: "non-positive query timeout", pool: new(pgxpool.Pool)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := NewPostgresStore(tt.pool, tt.queryTimeout)
+			if err == nil {
+				t.Fatal("NewPostgresStore returned nil error")
+			}
+			if store != nil {
+				t.Fatalf("NewPostgresStore store = %#v, want nil", store)
+			}
+		})
+	}
+}
+
 func TestPostgresStoreRollbackTransactionIsBounded(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 
@@ -206,15 +240,12 @@ func TestMapPostgresErrorDoesNotOverrideConcreteFailureWithLateCancellation(t *t
 }
 
 func TestMapPostgresErrorMapsStoreQueryTimeoutToUnavailable(t *testing.T) {
-	store := NewPostgresStore(new(pgxpool.Pool), time.Nanosecond)
-	queryCtx, cancel, err := store.queryContext(context.Background())
-	if err != nil {
-		t.Fatalf("queryContext() error = %v", err)
-	}
+	store := mustNewPostgresStore(t, new(pgxpool.Pool), time.Nanosecond)
+	queryCtx, cancel := store.queryContext(context.Background())
 	defer cancel()
 	<-queryCtx.Done()
 
-	err = mapPostgresError(queryCtx, queryCtx.Err())
+	err := mapPostgresError(queryCtx, queryCtx.Err())
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("mapPostgresError() = %v, want ErrUnavailable", err)
 	}
@@ -344,40 +375,5 @@ func TestMapPostgresErrorSanitizesNetworkDetails(t *testing.T) {
 
 	if strings.Contains(err.Error(), sensitiveMessage) {
 		t.Fatal("mapPostgresError() exposed raw network error details")
-	}
-}
-
-func TestPostgresStoreQueryContextRejectsUnavailableStore(t *testing.T) {
-	tests := []struct {
-		name  string
-		store *PostgresStore
-	}{
-		{
-			name:  "nil store",
-			store: nil,
-		},
-		{
-			name: "nil pool",
-			store: &PostgresStore{
-				queryTimeout: time.Second,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel, err := tt.store.queryContext(context.Background())
-			if !errors.Is(err, ErrUnavailable) {
-				t.Fatalf("queryContext() error = %v, want ErrUnavailable", err)
-			}
-
-			if ctx != nil {
-				t.Fatal("queryContext() returned non-nil context")
-			}
-
-			if cancel != nil {
-				t.Fatal("queryContext() returned non-nil cancel function")
-			}
-		})
 	}
 }
