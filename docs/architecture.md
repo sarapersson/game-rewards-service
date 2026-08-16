@@ -92,11 +92,18 @@ Shutdown cancellation is not persisted as a publisher failure: attempts are not 
 
 ## Failure classification
 
-Only explicitly recognized PostgreSQL availability failures are mapped to `503 service_unavailable`. Caller cancellation and caller deadlines remain standard context errors and are not reclassified as dependency failures.
+Only explicitly recognized PostgreSQL availability failures are mapped to `503 service_unavailable` on the API request path. Caller cancellation and caller deadlines remain standard context errors and are not reclassified as dependency failures.
 
-Schema, invariant, authentication, protocol, concurrency-control, and other unexpected database failures remain internal unless a specific domain mapping applies.
+The outbox worker uses the same fail-closed principle with process semantics appropriate for background work:
 
-Low-level PostgreSQL and network details are not returned to clients.
+* recognized PostgreSQL availability failures, including the worker store's own query timeout, are recoverable iteration failures and are retried after the poll interval;
+* publisher failures remain event-level outcomes and follow the persisted retry/backoff/dead-letter policy;
+* lease loss during finalization is an expected fencing outcome, recorded separately and left for normal lease recovery/reclaim;
+* schema, permission, invariant, protocol, programming, and otherwise unexpected store failures are fatal to the worker loop so the process can terminate rather than report an active but permanently ineffective worker.
+
+Caller/shutdown cancellation is preserved as context cancellation and is not counted as an outbox operation failure.
+
+Low-level PostgreSQL and network details are not returned to clients or exposed through worker failure logs.
 
 ## Observability model
 
@@ -105,7 +112,7 @@ The API and worker are separate processes with separate Prometheus registries:
 * API: HTTP, reward-claim, and idempotency metrics on `127.0.0.1:8080` for direct local runs;
 * worker: HTTP and outbox metrics on the worker admin listener, `127.0.0.1:8081` for direct local runs.
 
-`/livez` checks process liveness only. `/readyz` checks required runtime readiness: PostgreSQL for the API, and PostgreSQL plus an active worker loop for the worker.
+`/livez` checks process liveness only. `/readyz` checks required runtime readiness: PostgreSQL for the API, and PostgreSQL plus an active worker loop for the worker. A fatal worker store failure stops that loop and triggers process shutdown; transient recognized availability failures do not create sticky readiness state from a single failed iteration.
 
 Metrics use bounded labels and do not query PostgreSQL during scrapes. Database-global queue depth and oldest-event gauges are intentionally absent rather than approximated with process-local counters.
 

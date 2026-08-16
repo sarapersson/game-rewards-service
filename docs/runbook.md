@@ -49,6 +49,15 @@ curl -s http://localhost:8081/metrics
 
 Worker readiness requires both PostgreSQL and an active worker loop.
 
+Worker failure handling is intentionally split by semantics:
+
+* recognized PostgreSQL availability failures are retried after the poll interval;
+* publisher failures are persisted as controlled retry/dead-letter outcomes;
+* lease loss is an expected fencing outcome, recorded in `game_rewards_outbox_lease_losses_total` rather than `operation_errors_total`, and the event is left for normal lease recovery/reclaim;
+* schema, permission, invariant, programming, and other unexpected store failures terminate the worker component and make the process exit non-zero instead of polling forever.
+
+If the worker process exits while PostgreSQL itself is reachable, inspect the bounded `operation`, `error_class`, and `action` fields in the worker failure log together with deployment/schema state rather than assuming a transient database outage. Raw PostgreSQL or network errors should not be present in normal worker logs.
+
 When troubleshooting worker configuration, verify that the lease can outlive the publisher call and its final database operation:
 
 ```text
