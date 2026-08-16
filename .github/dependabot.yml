@@ -19,6 +19,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Go minor and major upgrades must be coordinated with go.mod.
+    ignore:
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
 
   - package-ecosystem: docker-compose
     directory: /
