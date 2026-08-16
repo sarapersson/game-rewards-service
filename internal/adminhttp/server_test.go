@@ -26,14 +26,12 @@ func (o *recordingObserver) ObserveRequest(route, method string, status int, _ t
 func TestNewServerWiresWorkerAdminEndpoints(t *testing.T) {
 	observer := &recordingObserver{}
 	server := NewServer(
-		config.Config{
-			HTTP: config.HTTPConfig{
-				ReadTimeout:       time.Second,
-				ReadHeaderTimeout: time.Second,
-				WriteTimeout:      time.Second,
-				IdleTimeout:       time.Second,
-			},
-			Worker: config.WorkerConfig{AdminAddr: ":9191"},
+		config.HTTPConfig{
+			Addr:              ":9191",
+			ReadTimeout:       time.Second,
+			ReadHeaderTimeout: time.Second,
+			WriteTimeout:      time.Second,
+			IdleTimeout:       time.Second,
 		},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }),
@@ -63,7 +61,7 @@ func TestNewServerWiresWorkerAdminEndpoints(t *testing.T) {
 func TestUnknownRouteIsBounded(t *testing.T) {
 	observer := &recordingObserver{}
 	server := NewServer(
-		config.Config{Worker: config.WorkerConfig{AdminAddr: ":0"}},
+		config.HTTPConfig{Addr: ":0"},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 		observer,
@@ -82,7 +80,7 @@ func TestUnknownRouteIsBounded(t *testing.T) {
 func TestServerObservesRecoveredPanicAsInternalError(t *testing.T) {
 	observer := &recordingObserver{}
 	server := NewServer(
-		config.Config{Worker: config.WorkerConfig{AdminAddr: ":0"}},
+		config.HTTPConfig{Addr: ":0"},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }),
 		observer,

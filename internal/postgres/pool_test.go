@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sarapersson/game-rewards-service/internal/config"
 )
 
 func TestOpenPoolRedactsInvalidDatabaseConfiguration(t *testing.T) {
@@ -16,7 +14,7 @@ func TestOpenPoolRedactsInvalidDatabaseConfiguration(t *testing.T) {
 		databaseURL = "postgres://game_rewards:" + secret + "@localhost:not-a-port/game_rewards?sslmode=disable"
 	)
 
-	pool, err := OpenPool(context.Background(), config.DatabaseConfig{URL: databaseURL})
+	pool, err := OpenPool(context.Background(), databaseURL)
 	if err == nil {
 		if pool != nil {
 			pool.Close()

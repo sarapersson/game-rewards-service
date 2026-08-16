@@ -31,7 +31,7 @@ func run(ctx context.Context) int {
 		return 0
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadAPI()
 	if err != nil {
 		slog.Error("load config", slog.Any("error", err))
 		return 1
@@ -39,7 +39,7 @@ func run(ctx context.Context) int {
 
 	logger := newLogger(cfg).With(slog.String("component", "api"))
 
-	dbPool, err := postgres.OpenPool(ctx, cfg.Database)
+	dbPool, err := postgres.OpenPool(ctx, cfg.Database.URL)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 			return 0
@@ -90,7 +90,7 @@ func run(ctx context.Context) int {
 	}
 
 	server, err := httpapi.NewServer(
-		cfg,
+		cfg.HTTP,
 		logger,
 		rewardService,
 		httpapi.ServerObservability{
@@ -196,7 +196,7 @@ func stopHTTPServer(
 	return errors.Join(shutdownErr, closeErr, serverErr)
 }
 
-func newLogger(cfg config.Config) *slog.Logger {
+func newLogger(cfg config.APIConfig) *slog.Logger {
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.Log.Level,
 	})

@@ -42,7 +42,7 @@ func run(ctx context.Context) int {
 		return 0
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadWorker()
 	if err != nil {
 		slog.Error("load config", slog.Any("error", err))
 		return 1
@@ -50,7 +50,7 @@ func run(ctx context.Context) int {
 
 	logger := newLogger(cfg).With(slog.String("component", "worker"))
 
-	dbPool, err := postgres.OpenPool(ctx, cfg.Database)
+	dbPool, err := postgres.OpenPool(ctx, cfg.Database.URL)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 			return 0
@@ -108,12 +108,12 @@ func run(ctx context.Context) int {
 		logger,
 		outbox.WorkerConfig{
 			WorkerID:       workerID,
-			PollInterval:   cfg.Worker.PollInterval,
-			LockTTL:        cfg.Worker.OutboxLockTTL,
-			PublishTimeout: cfg.Worker.PublishTimeout,
-			MaxAttempts:    cfg.Worker.MaxAttempts,
-			BaseBackoff:    cfg.Worker.BaseBackoff,
-			MaxBackoff:     cfg.Worker.MaxBackoff,
+			PollInterval:   cfg.Outbox.PollInterval,
+			LockTTL:        cfg.Outbox.LockTTL,
+			PublishTimeout: cfg.Outbox.PublishTimeout,
+			MaxAttempts:    cfg.Outbox.MaxAttempts,
+			BaseBackoff:    cfg.Outbox.BaseBackoff,
+			MaxBackoff:     cfg.Outbox.MaxBackoff,
 			Observer:       workerMetrics,
 		},
 	)
@@ -124,7 +124,7 @@ func run(ctx context.Context) int {
 
 	var workerReady atomic.Bool
 	adminServer := adminhttp.NewServer(
-		cfg,
+		cfg.AdminHTTP,
 		logger,
 		observability.Handler(registry),
 		httpMetrics,
@@ -336,7 +336,7 @@ func newWorkerID(serviceName string) string {
 	)
 }
 
-func newLogger(cfg config.Config) *slog.Logger {
+func newLogger(cfg config.WorkerConfig) *slog.Logger {
 	handler := slog.NewJSONHandler(
 		os.Stdout,
 		&slog.HandlerOptions{

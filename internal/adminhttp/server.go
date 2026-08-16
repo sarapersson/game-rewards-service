@@ -51,7 +51,7 @@ func (r *statusRecorder) Write(body []byte) (int, error) {
 
 // NewServer builds the worker's isolated admin server.
 func NewServer(
-	cfg config.Config,
+	cfg config.HTTPConfig,
 	logger *slog.Logger,
 	metricsHandler http.Handler,
 	observer RequestObserver,
@@ -66,12 +66,12 @@ func NewServer(
 	mux.HandleFunc("/", notFound)
 
 	return &http.Server{
-		Addr:              cfg.Worker.AdminAddr,
+		Addr:              cfg.Addr,
 		Handler:           middleware(mux, logger, observer),
-		ReadTimeout:       cfg.HTTP.ReadTimeout,
-		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
-		WriteTimeout:      cfg.HTTP.WriteTimeout,
-		IdleTimeout:       cfg.HTTP.IdleTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 }
 

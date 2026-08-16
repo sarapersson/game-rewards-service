@@ -195,7 +195,7 @@ In another terminal:
 make run-worker
 ```
 
-Runtime configuration is environment-based. Unset variables use defaults, while explicitly blank overrides are rejected at startup. Direct process defaults keep HTTP listeners on loopback; set `HTTP_ADDR` or `WORKER_ADMIN_ADDR` explicitly when another bind address is required. Defaults and supported variables are documented in [`.env.example`](.env.example). Local Compose credentials are development-only.
+Runtime configuration is environment-based. Each process loads and validates only the settings it owns, while shared database, HTTP-timeout, logging, and shutdown settings apply to both processes. Unset variables use defaults, while explicitly blank overrides are rejected for the process that owns them. Direct process defaults keep HTTP listeners on loopback; set API-owned `HTTP_ADDR` or worker-owned `WORKER_ADMIN_ADDR` explicitly when another bind address is required. Defaults, ownership, and supported variables are documented in [`.env.example`](.env.example). Local Compose credentials are development-only.
 
 ## Documentation
 
