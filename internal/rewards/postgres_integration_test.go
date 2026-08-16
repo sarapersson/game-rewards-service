@@ -22,9 +22,9 @@ import (
 
 const defaultIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 
-func TestPostgresStoreCreateClaimAllowsSameRewardInDifferentCampaigns(t *testing.T) {
+func TestCreateClaimPersistenceAllowsSameRewardInDifferentCampaigns(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -32,14 +32,14 @@ func TestPostgresStoreCreateClaimAllowsSameRewardInDifferentCampaigns(t *testing
 	secondCampaignID := "campaign-spring-" + testName
 	rewardID := "reward-" + testName
 
-	first := newIntegrationCreateClaimCommand(
+	first := newIntegrationCreateClaimParams(
 		t,
 		"claim-key-first-"+testName,
 		playerID,
 		firstCampaignID,
 		rewardID,
 	)
-	second := newIntegrationCreateClaimCommand(
+	second := newIntegrationCreateClaimParams(
 		t,
 		"claim-key-second-"+testName,
 		playerID,
@@ -50,22 +50,22 @@ func TestPostgresStoreCreateClaimAllowsSameRewardInDifferentCampaigns(t *testing
 	cleanupIntegrationCreateClaimData(t, pool, playerID, firstCampaignID, rewardID, first)
 	cleanupIntegrationCreateClaimData(t, pool, playerID, secondCampaignID, rewardID, second)
 
-	firstResult, err := store.CreateClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	if firstResult.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
+	if firstResult.StatusCode != createClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
 	}
 
-	secondResult, err := store.CreateClaim(context.Background(), second)
+	secondResult, err := service.createClaim(context.Background(), second)
 	if err != nil {
 		t.Fatalf("second CreateClaim returned error: %v", err)
 	}
 
-	if secondResult.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("second status = %d, want %d", secondResult.StatusCode, CreateClaimStatusCreated)
+	if secondResult.StatusCode != createClaimStatusCreated {
+		t.Fatalf("second status = %d, want %d", secondResult.StatusCode, createClaimStatusCreated)
 	}
 
 	var claimCount int
@@ -91,12 +91,12 @@ WHERE player_id = $1
 	}
 }
 
-func TestPostgresStoreCreateClaimPreservesCanceledCaller(t *testing.T) {
+func TestCreateClaimPersistencePreservesCanceledCaller(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
-	cmd := newIntegrationCreateClaimCommand(
+	cmd := newIntegrationCreateClaimParams(
 		t,
 		"claim-key-"+testName,
 		"player-"+testName,
@@ -107,7 +107,7 @@ func TestPostgresStoreCreateClaimPreservesCanceledCaller(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := store.CreateClaim(ctx, cmd)
+	_, err := service.createClaim(ctx, cmd)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("CreateClaim error = %v, want context.Canceled", err)
 	}
@@ -116,12 +116,12 @@ func TestPostgresStoreCreateClaimPreservesCanceledCaller(t *testing.T) {
 	}
 }
 
-func TestPostgresStoreCreateClaimPreservesExpiredCallerDeadline(t *testing.T) {
+func TestCreateClaimPersistencePreservesExpiredCallerDeadline(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
-	cmd := newIntegrationCreateClaimCommand(
+	cmd := newIntegrationCreateClaimParams(
 		t,
 		"claim-key-"+testName,
 		"player-"+testName,
@@ -132,7 +132,7 @@ func TestPostgresStoreCreateClaimPreservesExpiredCallerDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 
-	_, err := store.CreateClaim(ctx, cmd)
+	_, err := service.createClaim(ctx, cmd)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("CreateClaim error = %v, want context.DeadlineExceeded", err)
 	}
@@ -141,25 +141,25 @@ func TestPostgresStoreCreateClaimPreservesExpiredCallerDeadline(t *testing.T) {
 	}
 }
 
-func TestPostgresStoreCreateClaimCompletesIdempotencyKey(t *testing.T) {
+func TestCreateClaimPersistenceCompletesIdempotencyKey(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	result, err := store.CreateClaim(context.Background(), cmd)
+	result, err := service.createClaim(context.Background(), cmd)
 	if err != nil {
 		t.Fatalf("CreateClaim returned error: %v", err)
 	}
 
-	if result.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("status = %d, want %d", result.StatusCode, CreateClaimStatusCreated)
+	if result.StatusCode != createClaimStatusCreated {
+		t.Fatalf("status = %d, want %d", result.StatusCode, createClaimStatusCreated)
 	}
 
 	if result.Replayed {
@@ -183,8 +183,8 @@ func TestPostgresStoreCreateClaimCompletesIdempotencyKey(t *testing.T) {
 SELECT state, response_status, reward_claim_id::text, completed_at
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`,
-		cmd.Operation,
-		cmd.KeyHash,
+		idempotency.RewardClaimOperation,
+		cmd.KeyHash[:],
 	).Scan(&state, &responseStatus, &rewardClaimID, &completedAt)
 	if err != nil {
 		t.Fatalf("query idempotency key: %v", err)
@@ -194,8 +194,8 @@ WHERE operation = $1 AND key_hash = $2`,
 		t.Fatalf("state = %q, want %q", state, idempotencyStateCompleted)
 	}
 
-	if responseStatus != CreateClaimStatusCreated {
-		t.Fatalf("response_status = %d, want %d", responseStatus, CreateClaimStatusCreated)
+	if responseStatus != createClaimStatusCreated {
+		t.Fatalf("response_status = %d, want %d", responseStatus, createClaimStatusCreated)
 	}
 
 	if rewardClaimID != cmd.Claim.ID {
@@ -226,27 +226,27 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimReplaysCompletedResponse(t *testing.T) {
+func TestCreateClaimPersistenceReplaysCompletedResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	first := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	replay := first
 	replay.Claim.ID = newUUIDV4()
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
 
-	firstResult, err := store.CreateClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	replayResult, err := store.CreateClaim(context.Background(), replay)
+	replayResult, err := service.createClaim(context.Background(), replay)
 	if err != nil {
 		t.Fatalf("replay CreateClaim returned error: %v", err)
 	}
@@ -283,30 +283,27 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimRejectsKeyReuseWithDifferentPayload(t *testing.T) {
+func TestCreateClaimPersistenceRejectsKeyReuseWithDifferentPayload(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
-	mismatch := first
-	mismatch.Claim.ID = newUUIDV4()
-	mismatch.Claim.RewardID = rewardID + "-different"
-	mismatch.RequestHash = []byte("different-request-hash-32-bytes!")
+	key := "claim-key-" + testName
+	first := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID)
+	mismatch := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID+"-different")
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first)
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, mismatch.Claim.RewardID, mismatch)
 
-	_, err := store.CreateClaim(context.Background(), first)
+	_, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	_, err = store.CreateClaim(context.Background(), mismatch)
+	_, err = service.createClaim(context.Background(), mismatch)
 	if !errors.Is(err, ErrIdempotencyKeyReused) {
 		t.Fatalf("CreateClaim error = %v, want %v", err, ErrIdempotencyKeyReused)
 	}
@@ -330,31 +327,31 @@ WHERE player_id = $1 AND campaign_id = $2`,
 	}
 }
 
-func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
+func TestCreateClaimPersistenceStoresDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
+	first := newIntegrationCreateClaimParams(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimParams(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
 
-	_, err := store.CreateClaim(context.Background(), first)
+	_, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	result, err := store.CreateClaim(context.Background(), duplicate)
+	result, err := service.createClaim(context.Background(), duplicate)
 	if err != nil {
 		t.Fatalf("duplicate CreateClaim returned error: %v", err)
 	}
 
-	if result.StatusCode != CreateClaimStatusConflict {
-		t.Fatalf("duplicate status = %d, want %d", result.StatusCode, CreateClaimStatusConflict)
+	if result.StatusCode != createClaimStatusConflict {
+		t.Fatalf("duplicate status = %d, want %d", result.StatusCode, createClaimStatusConflict)
 	}
 
 	if result.Replayed {
@@ -366,8 +363,8 @@ func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
 		t.Fatalf("unmarshal duplicate response: %v; body = %s", err, result.ResponseBody)
 	}
 
-	if duplicateBody.Error.Code != DuplicateClaimErrorCode {
-		t.Fatalf("duplicate error code = %q, want %q", duplicateBody.Error.Code, DuplicateClaimErrorCode)
+	if duplicateBody.Error.Code != duplicateClaimErrorCode {
+		t.Fatalf("duplicate error code = %q, want %q", duplicateBody.Error.Code, duplicateClaimErrorCode)
 	}
 
 	var (
@@ -382,8 +379,8 @@ func TestPostgresStoreCreateClaimStoresDuplicateRewardResponse(t *testing.T) {
 SELECT state, response_status, response_body
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`,
-		duplicate.Operation,
-		duplicate.KeyHash,
+		idempotency.RewardClaimOperation,
+		duplicate.KeyHash[:],
 	).Scan(&state, &responseStatus, &responseBody)
 	if err != nil {
 		t.Fatalf("query duplicate idempotency key: %v", err)
@@ -393,8 +390,8 @@ WHERE operation = $1 AND key_hash = $2`,
 		t.Fatalf("duplicate state = %q, want %q", state, idempotencyStateCompleted)
 	}
 
-	if responseStatus != CreateClaimStatusConflict {
-		t.Fatalf("duplicate response_status = %d, want %d", responseStatus, CreateClaimStatusConflict)
+	if responseStatus != createClaimStatusConflict {
+		t.Fatalf("duplicate response_status = %d, want %d", responseStatus, createClaimStatusConflict)
 	}
 
 	if !bytes.Equal(responseBody, result.ResponseBody) {
@@ -421,33 +418,33 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimReplaysDuplicateRewardResponse(t *testing.T) {
+func TestCreateClaimPersistenceReplaysDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
+	first := newIntegrationCreateClaimParams(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimParams(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
 
 	duplicateReplay := duplicate
 	duplicateReplay.Claim.ID = newUUIDV4()
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate, duplicateReplay)
 
-	_, err := store.CreateClaim(context.Background(), first)
+	_, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	duplicateResult, err := store.CreateClaim(context.Background(), duplicate)
+	duplicateResult, err := service.createClaim(context.Background(), duplicate)
 	if err != nil {
 		t.Fatalf("duplicate CreateClaim returned error: %v", err)
 	}
 
-	replayResult, err := store.CreateClaim(context.Background(), duplicateReplay)
+	replayResult, err := service.createClaim(context.Background(), duplicateReplay)
 	if err != nil {
 		t.Fatalf("duplicate replay CreateClaim returned error: %v", err)
 	}
@@ -484,9 +481,9 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing.T) {
+func TestCreateClaimPersistencePreventsDuplicateRewardsConcurrently(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 5*time.Second)
+	service := mustNewIntegrationService(t, pool, 5*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
@@ -495,9 +492,9 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 
 	const attempts = 8
 
-	cmds := make([]CreateClaimStoreCommand, attempts)
+	cmds := make([]createClaimParams, attempts)
 	for i := range cmds {
-		cmds[i] = newIntegrationCreateClaimCommand(
+		cmds[i] = newIntegrationCreateClaimParams(
 			t,
 			"claim-key-"+testName+"-"+strconv.Itoa(i),
 			playerID,
@@ -523,7 +520,7 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 			ready <- struct{}{}
 			<-start
 
-			result, err := store.CreateClaim(context.Background(), cmd)
+			result, err := service.createClaim(context.Background(), cmd)
 			if err != nil {
 				errs <- err
 				return
@@ -552,9 +549,9 @@ func TestPostgresStoreCreateClaimPreventsDuplicateRewardsConcurrently(t *testing
 
 	for result := range results {
 		switch result.StatusCode {
-		case CreateClaimStatusCreated:
+		case createClaimStatusCreated:
 			createdCount++
-		case CreateClaimStatusConflict:
+		case createClaimStatusConflict:
 			conflictCount++
 		default:
 			t.Fatalf("unexpected status = %d; body = %s", result.StatusCode, result.ResponseBody)
@@ -620,12 +617,12 @@ SELECT
     count(*) FILTER (WHERE reward_claim_id IS NOT NULL)
 FROM idempotency_keys
 WHERE operation = $1 AND request_hash = $2`,
-		cmds[0].Operation,
-		cmds[0].RequestHash,
+		idempotency.RewardClaimOperation,
+		cmds[0].RequestHash[:],
 		idempotencyStateCompleted,
 		idempotencyStateProcessing,
-		CreateClaimStatusCreated,
-		CreateClaimStatusConflict,
+		createClaimStatusCreated,
+		createClaimStatusConflict,
 	).Scan(
 		&completedCount,
 		&processingCount,
@@ -658,19 +655,19 @@ WHERE operation = $1 AND request_hash = $2`,
 	}
 }
 
-func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testing.T) {
+func TestCreateClaimPersistenceReplaysSameKeySamePayloadConcurrently(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 5*time.Second)
+	service := mustNewIntegrationService(t, pool, 5*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	const attempts = 8
 
-	cmds := make([]CreateClaimStoreCommand, attempts)
+	cmds := make([]createClaimParams, attempts)
 	for i := range cmds {
 		cmds[i] = cmd
 		cmds[i].Claim.ID = newUUIDV4()
@@ -693,7 +690,7 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 			ready <- struct{}{}
 			<-start
 
-			result, err := store.CreateClaim(context.Background(), cmd)
+			result, err := service.createClaim(context.Background(), cmd)
 			if err != nil {
 				errs <- err
 				return
@@ -722,8 +719,8 @@ func TestPostgresStoreCreateClaimReplaysSameKeySamePayloadConcurrently(t *testin
 	)
 
 	for result := range results {
-		if result.StatusCode != CreateClaimStatusCreated {
-			t.Fatalf("status = %d, want %d; body = %s", result.StatusCode, CreateClaimStatusCreated, result.ResponseBody)
+		if result.StatusCode != createClaimStatusCreated {
+			t.Fatalf("status = %d, want %d; body = %s", result.StatusCode, createClaimStatusCreated, result.ResponseBody)
 		}
 
 		if result.Replayed {
@@ -781,8 +778,8 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 SELECT state, response_status, response_body, reward_claim_id::text
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`,
-		cmd.Operation,
-		cmd.KeyHash,
+		idempotency.RewardClaimOperation,
+		cmd.KeyHash[:],
 	).Scan(&state, &responseStatus, &storedBody, &rewardClaimID)
 	if err != nil {
 		t.Fatalf("query idempotency key: %v", err)
@@ -792,8 +789,8 @@ WHERE operation = $1 AND key_hash = $2`,
 		t.Fatalf("idempotency state = %q, want %q", state, idempotencyStateCompleted)
 	}
 
-	if responseStatus != CreateClaimStatusCreated {
-		t.Fatalf("stored response status = %d, want %d", responseStatus, CreateClaimStatusCreated)
+	if responseStatus != createClaimStatusCreated {
+		t.Fatalf("stored response status = %d, want %d", responseStatus, createClaimStatusCreated)
 	}
 
 	if !bytes.Equal(storedBody, responseBody) {
@@ -815,7 +812,7 @@ WHERE operation = $1 AND key_hash = $2`,
 	}
 }
 
-func TestPostgresStoreCreateClaimTreatsCommittedProcessingKeyAsInternal(t *testing.T) {
+func TestCreateClaimPersistenceTreatsCommittedProcessingKeyAsInternal(t *testing.T) {
 	tests := []struct {
 		name              string
 		storedHashDiffers bool
@@ -827,19 +824,18 @@ func TestPostgresStoreCreateClaimTreatsCommittedProcessingKeyAsInternal(t *testi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pool := openIntegrationPool(t)
-			store := mustNewPostgresStore(t, pool, 2*time.Second)
+			service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 			testName := integrationTestName(t)
 			playerID := "player-" + testName
 			campaignID := "campaign-" + testName
 			rewardID := "reward-" + testName
-			cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+			cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 			cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-			storedRequestHash := cmd.RequestHash
+			storedRequestHash := append([]byte(nil), cmd.RequestHash[:]...)
 			if tt.storedHashDiffers {
-				storedRequestHash = append([]byte(nil), cmd.RequestHash...)
 				storedRequestHash[0] ^= 0xff
 			}
 
@@ -848,8 +844,8 @@ func TestPostgresStoreCreateClaimTreatsCommittedProcessingKeyAsInternal(t *testi
 				`
 INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
 VALUES ($1, $2, $3, $4)`,
-				cmd.Operation,
-				cmd.KeyHash,
+				idempotency.RewardClaimOperation,
+				cmd.KeyHash[:],
 				storedRequestHash,
 				idempotencyStateProcessing,
 			)
@@ -857,7 +853,7 @@ VALUES ($1, $2, $3, $4)`,
 				t.Fatalf("seed committed processing idempotency key: %v", err)
 			}
 
-			_, err = store.CreateClaim(context.Background(), cmd)
+			_, err = service.createClaim(context.Background(), cmd)
 			if !errors.Is(err, ErrInternal) {
 				t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
 			}
@@ -884,23 +880,28 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimRejectsInvalidStoredReplay(t *testing.T) {
+func TestCreateClaimPersistenceRejectsInvalidStoredReplay(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	storedClaim := cmd.Claim
-	storedClaim.CreatedAt = time.Now().UTC()
-	storedBody, err := MarshalCreatedClaimResponse(storedClaim)
+	storedClaim := claim{
+		ID:         cmd.Claim.ID,
+		PlayerID:   cmd.Claim.PlayerID,
+		CampaignID: cmd.Claim.CampaignID,
+		RewardID:   cmd.Claim.RewardID,
+		CreatedAt:  time.Now().UTC(),
+	}
+	storedBody, err := marshalCreatedClaimResponse(storedClaim)
 	if err != nil {
-		t.Fatalf("MarshalCreatedClaimResponse returned error: %v", err)
+		t.Fatalf("marshalCreatedClaimResponse returned error: %v", err)
 	}
 
 	_, err = pool.Exec(
@@ -916,18 +917,18 @@ INSERT INTO idempotency_keys (
     completed_at
 )
 VALUES ($1, $2, $3, $4, $5, $6, now())`,
-		cmd.Operation,
-		cmd.KeyHash,
-		cmd.RequestHash,
+		idempotency.RewardClaimOperation,
+		cmd.KeyHash[:],
+		cmd.RequestHash[:],
 		idempotencyStateCompleted,
-		CreateClaimStatusCreated,
+		createClaimStatusCreated,
 		storedBody,
 	)
 	if err != nil {
 		t.Fatalf("seed invalid completed idempotency key: %v", err)
 	}
 
-	_, err = store.CreateClaim(context.Background(), cmd)
+	_, err = service.createClaim(context.Background(), cmd)
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
 	}
@@ -951,25 +952,25 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimCreatesRewardClaimedOutboxEvent(t *testing.T) {
+func TestCreateClaimPersistenceCreatesRewardClaimedOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	result, err := store.CreateClaim(context.Background(), cmd)
+	result, err := service.createClaim(context.Background(), cmd)
 	if err != nil {
 		t.Fatalf("CreateClaim returned error: %v", err)
 	}
 
-	if result.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("status = %d, want %d", result.StatusCode, CreateClaimStatusCreated)
+	if result.StatusCode != createClaimStatusCreated {
+		t.Fatalf("status = %d, want %d", result.StatusCode, createClaimStatusCreated)
 	}
 
 	var (
@@ -1015,7 +1016,7 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 		t.Fatalf("status = %q, want %q", status, outboxStatusPending)
 	}
 
-	var event RewardClaimedEvent
+	var event rewardClaimedEvent
 	if err := json.Unmarshal(payload, &event); err != nil {
 		t.Fatalf("unmarshal event payload: %v", err)
 	}
@@ -1048,8 +1049,8 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 		t.Fatalf("payload reward ID = %q, want %q", event.Claim.RewardID, rewardID)
 	}
 
-	if event.Claim.Status != ClaimStatusClaimed {
-		t.Fatalf("payload claim status = %q, want %q", event.Claim.Status, ClaimStatusClaimed)
+	if event.Claim.Status != claimStatusClaimed {
+		t.Fatalf("payload claim status = %q, want %q", event.Claim.Status, claimStatusClaimed)
 	}
 
 	if event.Claim.ClaimedAt.IsZero() {
@@ -1061,15 +1062,15 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimRollsBackWhenOutboxInsertFails(t *testing.T) {
+func TestCreateClaimPersistenceRollsBackWhenOutboxInsertFails(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	cmd := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
@@ -1106,7 +1107,7 @@ VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
 		t.Fatalf("seed conflicting outbox event: %v", err)
 	}
 
-	_, err = store.CreateClaim(context.Background(), cmd)
+	_, err = service.createClaim(context.Background(), cmd)
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
 	}
@@ -1135,8 +1136,8 @@ WHERE id = $1`,
 SELECT count(*)
 FROM idempotency_keys
 WHERE operation = $1 AND key_hash = $2`,
-		cmd.Operation,
-		cmd.KeyHash,
+		idempotency.RewardClaimOperation,
+		cmd.KeyHash[:],
 	).Scan(&idempotencyCount)
 	if err != nil {
 		t.Fatalf("count idempotency keys: %v", err)
@@ -1166,27 +1167,27 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 	}
 }
 
-func TestPostgresStoreCreateClaimReplayDoesNotCreateSecondOutboxEvent(t *testing.T) {
+func TestCreateClaimPersistenceReplayDoesNotCreateSecondOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	first := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
 	replay := first
 	replay.Claim.ID = newUUIDV4()
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
 
-	firstResult, err := store.CreateClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	replayResult, err := store.CreateClaim(context.Background(), replay)
+	replayResult, err := service.createClaim(context.Background(), replay)
 	if err != nil {
 		t.Fatalf("replay CreateClaim returned error: %v", err)
 	}
@@ -1226,35 +1227,35 @@ WHERE aggregate_type = $1
 	}
 }
 
-func TestPostgresStoreCreateClaimDuplicateRewardDoesNotCreateOutboxEvent(t *testing.T) {
+func TestCreateClaimPersistenceDuplicateRewardDoesNotCreateOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimCommand(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
+	first := newIntegrationCreateClaimParams(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
+	duplicate := newIntegrationCreateClaimParams(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
 
-	firstResult, err := store.CreateClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	if firstResult.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
+	if firstResult.StatusCode != createClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
 	}
 
-	duplicateResult, err := store.CreateClaim(context.Background(), duplicate)
+	duplicateResult, err := service.createClaim(context.Background(), duplicate)
 	if err != nil {
 		t.Fatalf("duplicate CreateClaim returned error: %v", err)
 	}
 
-	if duplicateResult.StatusCode != CreateClaimStatusConflict {
-		t.Fatalf("duplicate status = %d, want %d", duplicateResult.StatusCode, CreateClaimStatusConflict)
+	if duplicateResult.StatusCode != createClaimStatusConflict {
+		t.Fatalf("duplicate status = %d, want %d", duplicateResult.StatusCode, createClaimStatusConflict)
 	}
 
 	if duplicateResult.Replayed {
@@ -1282,34 +1283,31 @@ WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
 	}
 }
 
-func TestPostgresStoreCreateClaimKeyMismatchDoesNotCreateOutboxEvent(t *testing.T) {
+func TestCreateClaimPersistenceKeyMismatchDoesNotCreateOutboxEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := mustNewPostgresStore(t, pool, 2*time.Second)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimCommand(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
-	mismatch := first
-	mismatch.Claim.ID = newUUIDV4()
-	mismatch.Claim.RewardID = rewardID + "-different"
-	mismatch.RequestHash = []byte("different-request-hash-32-bytes!")
+	key := "claim-key-" + testName
+	first := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID)
+	mismatch := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID+"-different")
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first)
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, mismatch.Claim.RewardID, mismatch)
 
-	firstResult, err := store.CreateClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	if firstResult.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, CreateClaimStatusCreated)
+	if firstResult.StatusCode != createClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
 	}
 
-	_, err = store.CreateClaim(context.Background(), mismatch)
+	_, err = service.createClaim(context.Background(), mismatch)
 	if !errors.Is(err, ErrIdempotencyKeyReused) {
 		t.Fatalf("mismatch CreateClaim error = %v, want %v", err, ErrIdempotencyKeyReused)
 	}
@@ -1335,7 +1333,7 @@ WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
 	}
 }
 
-func TestPostgresStoreOutboxEventsAreUniquePerAggregateAndEventType(t *testing.T) {
+func TestOutboxEventsAreUniquePerAggregateAndEventType(t *testing.T) {
 	pool := openIntegrationPool(t)
 
 	aggregateID := newUUIDV4()
@@ -1389,6 +1387,17 @@ VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
 	if err == nil {
 		t.Fatal("insert second outbox event succeeded, want unique constraint violation")
 	}
+}
+
+func mustNewIntegrationService(t *testing.T, pool *pgxpool.Pool, queryTimeout time.Duration) *Service {
+	t.Helper()
+
+	service, err := NewService(pool, queryTimeout)
+	if err != nil {
+		t.Fatalf("NewService returned error: %v", err)
+	}
+
+	return service
 }
 
 func openIntegrationPool(t *testing.T) *pgxpool.Pool {
@@ -1454,7 +1463,7 @@ func cleanupIntegrationCreateClaimData(
 	t *testing.T,
 	pool *pgxpool.Pool,
 	playerID, campaignID, rewardID string,
-	cmds ...CreateClaimStoreCommand,
+	cmds ...createClaimParams,
 ) {
 	t.Helper()
 
@@ -1463,8 +1472,8 @@ func cleanupIntegrationCreateClaimData(
 			_, err := pool.Exec(
 				context.Background(),
 				"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-				cmd.Operation,
-				cmd.KeyHash,
+				idempotency.RewardClaimOperation,
+				cmd.KeyHash[:],
 			)
 			if err != nil {
 				return fmt.Errorf("delete idempotency key: %w", err)
@@ -1501,7 +1510,7 @@ WHERE aggregate_type = $1
 			rewardID,
 		)
 		if err != nil {
-			return fmt.Errorf("delete outbox events for reward claim: %w", err)
+			return fmt.Errorf("delete outbox events for reward Claim: %w", err)
 		}
 
 		_, err = pool.Exec(
@@ -1535,10 +1544,10 @@ func runIntegrationCleanup(t *testing.T, cleanup func() error) {
 	})
 }
 
-func newIntegrationCreateClaimCommand(
+func newIntegrationCreateClaimParams(
 	t *testing.T,
 	key, playerID, campaignID, rewardID string,
-) CreateClaimStoreCommand {
+) createClaimParams {
 	t.Helper()
 
 	keyHash, err := idempotency.HashKey(key)
@@ -1555,17 +1564,15 @@ func newIntegrationCreateClaimCommand(
 		t.Fatalf("hash request: %v", err)
 	}
 
-	return CreateClaimStoreCommand{
-		Claim: Claim{
+	return createClaimParams{
+		Claim: claimToCreate{
 			ID:         newUUIDV4(),
 			PlayerID:   playerID,
 			CampaignID: campaignID,
 			RewardID:   rewardID,
-			Status:     ClaimStatusClaimed,
 		},
-		Operation:   idempotency.RewardClaimOperation,
-		KeyHash:     keyHash[:],
-		RequestHash: requestHash[:],
+		KeyHash:     keyHash,
+		RequestHash: requestHash,
 	}
 }
 

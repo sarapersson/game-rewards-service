@@ -8,17 +8,15 @@ import (
 func TestNewRewardClaimedEvent(t *testing.T) {
 	claimedAt := time.Date(2026, 7, 8, 12, 34, 56, 0, time.UTC)
 
-	claim := Claim{
+	claim := claim{
 		ID:         "claim_123",
 		PlayerID:   "player_123",
 		CampaignID: "winter_2026",
 		RewardID:   "coins_1000",
-		Status:     ClaimStatusClaimed,
 		CreatedAt:  claimedAt,
-		UpdatedAt:  claimedAt,
 	}
 
-	event := NewRewardClaimedEvent("event_123", claim)
+	event := newRewardClaimedEvent("event_123", claim)
 
 	if event.SchemaVersion != rewardClaimedSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", event.SchemaVersion, rewardClaimedSchemaVersion)
@@ -45,8 +43,8 @@ func TestNewRewardClaimedEvent(t *testing.T) {
 	if event.Claim.RewardID != claim.RewardID {
 		t.Fatalf("reward ID = %q, want %q", event.Claim.RewardID, claim.RewardID)
 	}
-	if event.Claim.Status != ClaimStatusClaimed {
-		t.Fatalf("claim status = %q, want %q", event.Claim.Status, ClaimStatusClaimed)
+	if event.Claim.Status != claimStatusClaimed {
+		t.Fatalf("claim status = %q, want %q", event.Claim.Status, claimStatusClaimed)
 	}
 	if !event.Claim.ClaimedAt.Equal(claimedAt) {
 		t.Fatalf("claimed at = %s, want %s", event.Claim.ClaimedAt, claimedAt)

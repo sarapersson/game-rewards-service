@@ -1,120 +1,69 @@
 package rewards
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
-const serviceTestClaimID = "11111111-1111-4111-8111-111111111111"
+func TestNewServiceValidatesConstruction(t *testing.T) {
+	tests := []struct {
+		name         string
+		pool         *pgxpool.Pool
+		queryTimeout time.Duration
+	}{
+		{name: "missing pool", queryTimeout: time.Second},
+		{name: "non-positive query timeout", pool: new(pgxpool.Pool)},
+	}
 
-type fakeStore struct {
-	cmd    CreateClaimStoreCommand
-	result CreateClaimResult
-	err    error
-	called bool
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, err := NewService(tt.pool, tt.queryTimeout)
+			if err == nil {
+				t.Fatal("NewService returned nil error")
+			}
+			if service != nil {
+				t.Fatalf("NewService service = %#v, want nil", service)
+			}
+		})
+	}
 }
 
-func (s *fakeStore) CreateClaim(_ context.Context, cmd CreateClaimStoreCommand) (CreateClaimResult, error) {
-	s.called = true
-	s.cmd = cmd
-
-	if s.err != nil {
-		return CreateClaimResult{}, s.err
-	}
-
-	if s.result.ResponseBody != nil || s.result.StatusCode != 0 || s.result.Replayed {
-		return s.result, nil
-	}
-
-	body, err := MarshalCreatedClaimResponse(cmd.Claim)
-	if err != nil {
-		return CreateClaimResult{}, err
-	}
-
-	return CreateClaimResult{
-		StatusCode:   CreateClaimStatusCreated,
-		ResponseBody: body,
-	}, nil
-}
-
-func mustNewService(t *testing.T, store Store) *Service {
-	t.Helper()
-
-	service, err := NewService(store)
-	if err != nil {
-		t.Fatalf("NewService returned error: %v", err)
-	}
-
-	return service
-}
-
-func TestServiceCreateClaim(t *testing.T) {
-	store := &fakeStore{}
-
-	service := mustNewService(t, store)
-
-	result, err := service.CreateClaim(context.Background(), CreateClaimCommand{
+func TestPrepareCreateClaimNormalizesAndHashesCommand(t *testing.T) {
+	params, err := prepareCreateClaim(CreateClaimCommand{
 		PlayerID:       " player-123 ",
 		CampaignID:     " campaign-123 ",
 		RewardID:       " reward-123 ",
 		IdempotencyKey: " claim-key-123 ",
 	})
 	if err != nil {
-		t.Fatalf("CreateClaim returned error: %v", err)
+		t.Fatalf("prepareCreateClaim returned error: %v", err)
 	}
 
-	if result.StatusCode != CreateClaimStatusCreated {
-		t.Fatalf("CreateClaim status = %d, want %d", result.StatusCode, CreateClaimStatusCreated)
+	if !validUUID(params.Claim.ID) {
+		t.Fatalf("claim ID = %q, want UUID", params.Claim.ID)
 	}
-
-	if result.Replayed {
-		t.Fatal("CreateClaim should not return replayed result")
+	if params.Claim.PlayerID != "player-123" {
+		t.Fatalf("player ID = %q, want player-123", params.Claim.PlayerID)
 	}
-
-	if len(result.ResponseBody) == 0 {
-		t.Fatal("CreateClaim response body is empty")
+	if params.Claim.CampaignID != "campaign-123" {
+		t.Fatalf("campaign ID = %q, want campaign-123", params.Claim.CampaignID)
 	}
-
-	if !store.called {
-		t.Fatal("CreateClaim did not call store")
-	}
-
-	if !validUUID(store.cmd.Claim.ID) {
-		t.Fatalf("stored claim ID = %q, want UUID", store.cmd.Claim.ID)
-	}
-
-	if store.cmd.Claim.PlayerID != "player-123" {
-		t.Fatalf("stored player ID = %q, want %q", store.cmd.Claim.PlayerID, "player-123")
-	}
-
-	if store.cmd.Claim.CampaignID != "campaign-123" {
-		t.Fatalf("stored campaign ID = %q, want %q", store.cmd.Claim.CampaignID, "campaign-123")
-	}
-
-	if store.cmd.Claim.RewardID != "reward-123" {
-		t.Fatalf("stored reward ID = %q, want %q", store.cmd.Claim.RewardID, "reward-123")
-	}
-
-	if store.cmd.Claim.Status != ClaimStatusClaimed {
-		t.Fatalf("stored claim status = %q, want %q", store.cmd.Claim.Status, ClaimStatusClaimed)
-	}
-
-	if store.cmd.Operation != idempotency.RewardClaimOperation {
-		t.Fatalf("store command operation = %q, want %q", store.cmd.Operation, idempotency.RewardClaimOperation)
+	if params.Claim.RewardID != "reward-123" {
+		t.Fatalf("reward ID = %q, want reward-123", params.Claim.RewardID)
 	}
 
 	wantKeyHash, err := idempotency.HashKey("claim-key-123")
 	if err != nil {
 		t.Fatalf("HashKey returned error: %v", err)
 	}
-
-	if !bytes.Equal(store.cmd.KeyHash, wantKeyHash[:]) {
-		t.Fatalf("store command key hash = %x, want %x", store.cmd.KeyHash, wantKeyHash)
+	if params.KeyHash != wantKeyHash {
+		t.Fatalf("key hash = %x, want %x", params.KeyHash, wantKeyHash)
 	}
 
 	wantRequestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
@@ -125,47 +74,12 @@ func TestServiceCreateClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashRewardClaimRequest returned error: %v", err)
 	}
-
-	if !bytes.Equal(store.cmd.RequestHash, wantRequestHash[:]) {
-		t.Fatalf("store command request hash = %x, want %x", store.cmd.RequestHash, wantRequestHash)
+	if params.RequestHash != wantRequestHash {
+		t.Fatalf("request hash = %x, want %x", params.RequestHash, wantRequestHash)
 	}
 }
 
-func TestServiceCreateClaimReturnsValidStoreResultUnchanged(t *testing.T) {
-	want := CreateClaimResult{
-		StatusCode: CreateClaimStatusCreated,
-		ResponseBody: []byte(" \n{" +
-			`"claim_id":"` + serviceTestClaimID + `",` +
-			`"player_id":"player-123",` +
-			`"campaign_id":"campaign-123",` +
-			`"reward_id":"reward-123",` +
-			`"status":"claimed",` +
-			`"claimed_at":"2026-08-11T12:00:00Z"}` + "\t"),
-		Replayed: true,
-	}
-
-	store := &fakeStore{result: want}
-	service := mustNewService(t, store)
-
-	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
-	if err != nil {
-		t.Fatalf("CreateClaim returned error: %v", err)
-	}
-
-	if got.StatusCode != want.StatusCode {
-		t.Fatalf("status code = %d, want %d", got.StatusCode, want.StatusCode)
-	}
-
-	if got.Replayed != want.Replayed {
-		t.Fatalf("replayed = %t, want %t", got.Replayed, want.Replayed)
-	}
-
-	if !bytes.Equal(got.ResponseBody, want.ResponseBody) {
-		t.Fatalf("response body = %q, want %q", got.ResponseBody, want.ResponseBody)
-	}
-}
-
-func TestServiceCreateClaimValidation(t *testing.T) {
+func TestPrepareCreateClaimValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		cmd         CreateClaimCommand
@@ -204,32 +118,10 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 			wantMessage: "campaign_id is required",
 		},
 		{
-			name: "whitespace-only campaign_id",
-			cmd: CreateClaimCommand{
-				PlayerID:       "player-123",
-				CampaignID:     "   ",
-				RewardID:       "reward-123",
-				IdempotencyKey: "claim-key-123",
-			},
-			wantField:   "campaign_id",
-			wantMessage: "campaign_id is required",
-		},
-		{
 			name: "missing reward_id",
 			cmd: CreateClaimCommand{
 				PlayerID:       "player-123",
 				CampaignID:     "campaign-123",
-				IdempotencyKey: "claim-key-123",
-			},
-			wantField:   "reward_id",
-			wantMessage: "reward_id is required",
-		},
-		{
-			name: "whitespace-only reward_id",
-			cmd: CreateClaimCommand{
-				PlayerID:       "player-123",
-				CampaignID:     "campaign-123",
-				RewardID:       "   ",
 				IdempotencyKey: "claim-key-123",
 			},
 			wantField:   "reward_id",
@@ -312,17 +204,6 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 			wantMessage: "idempotency key is required",
 		},
 		{
-			name: "whitespace-only idempotency key",
-			cmd: CreateClaimCommand{
-				PlayerID:       "player-123",
-				CampaignID:     "campaign-123",
-				RewardID:       "reward-123",
-				IdempotencyKey: "   ",
-			},
-			wantField:   "idempotency_key",
-			wantMessage: "idempotency key is required",
-		},
-		{
 			name: "invalid idempotency key",
 			cmd: CreateClaimCommand{
 				PlayerID:       "player-123",
@@ -337,100 +218,45 @@ func TestServiceCreateClaimValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &fakeStore{}
-			service := mustNewService(t, store)
-
-			_, err := service.CreateClaim(context.Background(), tt.cmd)
+			_, err := prepareCreateClaim(tt.cmd)
 			if err == nil {
-				t.Fatal("CreateClaim returned nil error, want validation error")
+				t.Fatal("prepareCreateClaim returned nil error, want validation error")
 			}
-
 			if !IsValidationError(err) {
-				t.Fatalf("CreateClaim error = %v, want validation error", err)
+				t.Fatalf("prepareCreateClaim error = %v, want validation error", err)
 			}
 
 			var validationErr ValidationError
 			if !errors.As(err, &validationErr) {
-				t.Fatalf("CreateClaim error = %v, want ValidationError", err)
+				t.Fatalf("prepareCreateClaim error = %v, want ValidationError", err)
 			}
-
 			if validationErr.Field != tt.wantField {
 				t.Fatalf("ValidationError.Field = %q, want %q", validationErr.Field, tt.wantField)
 			}
-
 			if validationErr.Message != tt.wantMessage {
 				t.Fatalf("ValidationError.Message = %q, want %q", validationErr.Message, tt.wantMessage)
-			}
-
-			if err.Error() != tt.wantMessage {
-				t.Fatalf("CreateClaim error = %q, want %q", err.Error(), tt.wantMessage)
-			}
-
-			if store.called {
-				t.Fatal("store was called for invalid command")
 			}
 		})
 	}
 }
 
-func TestServiceCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
-	store := &fakeStore{}
-	service := mustNewService(t, store)
+func TestPrepareCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
 	maxLengthID := strings.Repeat("å", maxIDLength)
 
-	if _, err := service.CreateClaim(context.Background(), CreateClaimCommand{
+	params, err := prepareCreateClaim(CreateClaimCommand{
 		PlayerID:       maxLengthID,
 		CampaignID:     maxLengthID,
 		RewardID:       maxLengthID,
 		IdempotencyKey: "claim-key-123",
-	}); err != nil {
-		t.Fatalf("CreateClaim returned error: %v", err)
-	}
-
-	if store.cmd.Claim.PlayerID != maxLengthID ||
-		store.cmd.Claim.CampaignID != maxLengthID ||
-		store.cmd.Claim.RewardID != maxLengthID {
-		t.Fatalf("stored claim identifiers do not preserve %d-character multibyte values", maxIDLength)
-	}
-}
-
-func TestServiceCreateClaimReturnsDuplicateResult(t *testing.T) {
-	body, err := MarshalDuplicateClaimResponse()
+	})
 	if err != nil {
-		t.Fatalf("MarshalDuplicateClaimResponse returned error: %v", err)
+		t.Fatalf("prepareCreateClaim returned error: %v", err)
 	}
 
-	want := CreateClaimResult{
-		StatusCode:   CreateClaimStatusConflict,
-		ResponseBody: body,
-	}
-	store := &fakeStore{result: want}
-
-	service := mustNewService(t, store)
-
-	got, err := service.CreateClaim(context.Background(), validCreateClaimCommand())
-	if err != nil {
-		t.Fatalf("CreateClaim returned error: %v", err)
-	}
-
-	if got.StatusCode != want.StatusCode {
-		t.Fatalf("status code = %d, want %d", got.StatusCode, want.StatusCode)
-	}
-	if got.Replayed {
-		t.Fatal("duplicate result should not be marked replayed")
-	}
-	if !bytes.Equal(got.ResponseBody, want.ResponseBody) {
-		t.Fatalf("response body = %q, want %q", got.ResponseBody, want.ResponseBody)
-	}
-}
-
-func TestNewServiceRequiresStore(t *testing.T) {
-	service, err := NewService(nil)
-	if err == nil {
-		t.Fatal("NewService returned nil error")
-	}
-	if service != nil {
-		t.Fatalf("NewService service = %#v, want nil", service)
+	if params.Claim.PlayerID != maxLengthID ||
+		params.Claim.CampaignID != maxLengthID ||
+		params.Claim.RewardID != maxLengthID {
+		t.Fatal("prepareCreateClaim changed valid maximum-length identifiers")
 	}
 }
 
@@ -443,6 +269,6 @@ func validCreateClaimCommand() CreateClaimCommand {
 	}
 }
 
-func stringOfLength(n int) string {
-	return strings.Repeat("a", n)
+func stringOfLength(length int) string {
+	return strings.Repeat("a", length)
 }

@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,23 +12,6 @@ import (
 )
 
 type stubRewardClaimService struct{}
-
-type unexpectedRewardStore struct{}
-
-func (unexpectedRewardStore) CreateClaim(context.Context, rewards.CreateClaimStoreCommand) (rewards.CreateClaimResult, error) {
-	return rewards.CreateClaimResult{}, errors.New("unexpected reward store call")
-}
-
-func mustNewRewardService(t *testing.T, store rewards.Store) *rewards.Service {
-	t.Helper()
-
-	service, err := rewards.NewService(store)
-	if err != nil {
-		t.Fatalf("NewService returned error: %v", err)
-	}
-
-	return service
-}
 
 func (stubRewardClaimService) CreateClaim(context.Context, rewards.CreateClaimCommand) (rewards.CreateClaimResult, error) {
 	return rewards.CreateClaimResult{}, nil

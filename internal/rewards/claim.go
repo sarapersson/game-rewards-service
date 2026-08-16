@@ -1,26 +1,34 @@
-// Package rewards contains reward claim domain logic and persistence boundaries.
+// Package rewards implements the reward-claim use case and its persistence logic.
 package rewards
 
-import "time"
+import (
+	"crypto/sha256"
+	"time"
+)
 
 const (
 	// maxIDLength matches the database constraints for player, campaign, and reward identifiers.
 	maxIDLength = 128
 
-	ClaimStatusClaimed = "claimed"
+	claimStatusClaimed = "claimed"
 
-	CreateClaimStatusCreated  = 201
-	CreateClaimStatusConflict = 409
+	createClaimStatusCreated  = 201
+	createClaimStatusConflict = 409
 )
 
-type Claim struct {
+type claimToCreate struct {
 	ID         string
 	PlayerID   string
 	CampaignID string
 	RewardID   string
-	Status     string
+}
+
+type claim struct {
+	ID         string
+	PlayerID   string
+	CampaignID string
+	RewardID   string
 	CreatedAt  time.Time
-	UpdatedAt  time.Time
 }
 
 type CreateClaimCommand struct {
@@ -36,9 +44,8 @@ type CreateClaimResult struct {
 	Replayed     bool
 }
 
-type CreateClaimStoreCommand struct {
-	Claim       Claim
-	Operation   string
-	KeyHash     []byte
-	RequestHash []byte
+type createClaimParams struct {
+	Claim       claimToCreate
+	KeyHash     [sha256.Size]byte
+	RequestHash [sha256.Size]byte
 }
