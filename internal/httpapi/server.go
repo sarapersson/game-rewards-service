@@ -29,7 +29,7 @@ type ServerObservability struct {
 
 // NewServer builds the HTTP server with routes, middleware, metrics, and production-safe timeouts.
 func NewServer(
-	cfg config.Config,
+	cfg config.HTTPConfig,
 	logger *slog.Logger,
 	rewardClaims rewardClaimCreator,
 	observability ServerObservability,
@@ -43,11 +43,11 @@ func NewServer(
 	}
 
 	return &http.Server{
-		Addr:              cfg.HTTP.Addr,
+		Addr:              cfg.Addr,
 		Handler:           newRouter(logger, rewardClaims, observability, readinessChecks...),
-		ReadTimeout:       cfg.HTTP.ReadTimeout,
-		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
-		WriteTimeout:      cfg.HTTP.WriteTimeout,
-		IdleTimeout:       cfg.HTTP.IdleTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}, nil
 }

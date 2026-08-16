@@ -54,7 +54,7 @@ func testRewardClaimsHandler(service rewardClaimCreator, observers ...RewardClai
 
 func mustNewTestServer(
 	t *testing.T,
-	cfg config.Config,
+	cfg config.HTTPConfig,
 	observability ServerObservability,
 	readinessChecks ...ReadinessCheck,
 ) *http.Server {

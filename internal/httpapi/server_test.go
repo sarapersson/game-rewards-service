@@ -10,14 +10,12 @@ import (
 )
 
 func TestNewServerUsesConfiguredSettings(t *testing.T) {
-	cfg := config.Config{
-		HTTP: config.HTTPConfig{
-			Addr:              ":9090",
-			ReadTimeout:       1 * time.Second,
-			ReadHeaderTimeout: 2 * time.Second,
-			WriteTimeout:      3 * time.Second,
-			IdleTimeout:       4 * time.Second,
-		},
+	cfg := config.HTTPConfig{
+		Addr:              ":9090",
+		ReadTimeout:       1 * time.Second,
+		ReadHeaderTimeout: 2 * time.Second,
+		WriteTimeout:      3 * time.Second,
+		IdleTimeout:       4 * time.Second,
 	}
 
 	server := mustNewTestServer(t, cfg, ServerObservability{})
@@ -43,7 +41,7 @@ func TestNewServerUsesConfiguredSettings(t *testing.T) {
 }
 
 func TestNewServerRequiresCoreDependencies(t *testing.T) {
-	cfg := config.Config{HTTP: config.HTTPConfig{Addr: ":0"}}
+	cfg := config.HTTPConfig{Addr: ":0"}
 
 	tests := []struct {
 		name         string
@@ -76,7 +74,7 @@ func TestNewServerWiresRoutesMiddlewareAndMetrics(t *testing.T) {
 	observer := &recordingRequestObserver{}
 	server := mustNewTestServer(
 		t,
-		config.Config{HTTP: config.HTTPConfig{Addr: ":0"}},
+		config.HTTPConfig{Addr: ":0"},
 		ServerObservability{
 			MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/plain")

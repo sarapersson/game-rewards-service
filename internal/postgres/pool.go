@@ -8,17 +8,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sarapersson/game-rewards-service/internal/config"
 )
 
 // ErrInvalidDatabaseConfig indicates that the configured database connection
 // string could not be parsed.
 var ErrInvalidDatabaseConfig = errors.New("invalid database configuration")
 
-// OpenPool creates a PostgreSQL connection pool from runtime configuration.
-func OpenPool(ctx context.Context, cfg config.DatabaseConfig) (*pgxpool.Pool, error) {
-	poolConfig, err := pgxpool.ParseConfig(cfg.URL)
+// OpenPool creates a PostgreSQL connection pool from a connection string.
+func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database config: %w", ErrInvalidDatabaseConfig)
 	}

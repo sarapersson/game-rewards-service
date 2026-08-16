@@ -1,4 +1,4 @@
-// Package config loads and validates runtime configuration for the service.
+// Package config loads and validates process runtime configuration.
 package config
 
 import (
@@ -32,13 +32,23 @@ const (
 	defaultOutboxMaxBackoff      = 1 * time.Minute
 )
 
-// Config contains all runtime configuration needed by the service.
-type Config struct {
+// APIConfig contains runtime configuration owned by the API process.
+type APIConfig struct {
 	AppEnv          string
 	ServiceName     string
 	HTTP            HTTPConfig
 	Database        DatabaseConfig
-	Worker          WorkerConfig
+	Log             LogConfig
+	ShutdownTimeout time.Duration
+}
+
+// WorkerConfig contains runtime configuration owned by the worker process.
+type WorkerConfig struct {
+	AppEnv          string
+	ServiceName     string
+	AdminHTTP       HTTPConfig
+	Database        DatabaseConfig
+	Outbox          OutboxConfig
 	Log             LogConfig
 	ShutdownTimeout time.Duration
 }
@@ -59,11 +69,10 @@ type DatabaseConfig struct {
 	QueryTimeout time.Duration
 }
 
-// WorkerConfig contains outbox worker settings.
-type WorkerConfig struct {
-	AdminAddr      string
+// OutboxConfig contains outbox worker runtime settings.
+type OutboxConfig struct {
 	PollInterval   time.Duration
-	OutboxLockTTL  time.Duration
+	LockTTL        time.Duration
 	PublishTimeout time.Duration
 	MaxAttempts    int
 	BaseBackoff    time.Duration
@@ -75,114 +84,196 @@ type LogConfig struct {
 	Level slog.Level
 }
 
-// Load reads configuration from process environment variables.
-func Load() (Config, error) {
-	return loadWithLookup(os.LookupEnv)
+// LoadAPI reads and validates configuration owned by the API process.
+func LoadAPI() (APIConfig, error) {
+	return loadAPIWithLookup(os.LookupEnv)
+}
+
+// LoadWorker reads and validates configuration owned by the worker process.
+func LoadWorker() (WorkerConfig, error) {
+	return loadWorkerWithLookup(os.LookupEnv)
 }
 
 type lookupFunc func(string) (string, bool)
 
-func loadWithLookup(lookup lookupFunc) (Config, error) {
-	var cfg Config
+type commonConfig struct {
+	AppEnv          string
+	ServiceName     string
+	Database        DatabaseConfig
+	Log             LogConfig
+	ShutdownTimeout time.Duration
+}
+
+func loadAPIWithLookup(lookup lookupFunc) (APIConfig, error) {
+	common, err := loadCommon(lookup)
+	if err != nil {
+		return APIConfig{}, err
+	}
+
+	httpConfig, err := loadHTTPConfig(lookup, "HTTP_ADDR", defaultHTTPAddr)
+	if err != nil {
+		return APIConfig{}, err
+	}
+
+	return APIConfig{
+		AppEnv:          common.AppEnv,
+		ServiceName:     common.ServiceName,
+		HTTP:            httpConfig,
+		Database:        common.Database,
+		Log:             common.Log,
+		ShutdownTimeout: common.ShutdownTimeout,
+	}, nil
+}
+
+func loadWorkerWithLookup(lookup lookupFunc) (WorkerConfig, error) {
+	common, err := loadCommon(lookup)
+	if err != nil {
+		return WorkerConfig{}, err
+	}
+
+	adminHTTP, err := loadHTTPConfig(lookup, "WORKER_ADMIN_ADDR", defaultWorkerAdminAddr)
+	if err != nil {
+		return WorkerConfig{}, err
+	}
+
+	outbox, err := loadOutboxConfig(lookup)
+	if err != nil {
+		return WorkerConfig{}, err
+	}
+
+	if err := validateOutbox(outbox, common.Database.QueryTimeout); err != nil {
+		return WorkerConfig{}, err
+	}
+
+	return WorkerConfig{
+		AppEnv:          common.AppEnv,
+		ServiceName:     common.ServiceName,
+		AdminHTTP:       adminHTTP,
+		Database:        common.Database,
+		Outbox:          outbox,
+		Log:             common.Log,
+		ShutdownTimeout: common.ShutdownTimeout,
+	}, nil
+}
+
+func loadCommon(lookup lookupFunc) (commonConfig, error) {
+	var cfg commonConfig
 	var err error
 
 	cfg.AppEnv, err = getString(lookup, "APP_ENV", defaultAppEnv)
 	if err != nil {
-		return Config{}, err
+		return commonConfig{}, err
 	}
 
 	cfg.ServiceName, err = getString(lookup, "SERVICE_NAME", defaultServiceName)
 	if err != nil {
-		return Config{}, err
+		return commonConfig{}, err
 	}
 
-	cfg.HTTP.Addr, err = getString(lookup, "HTTP_ADDR", defaultHTTPAddr)
+	cfg.Database, err = loadDatabaseConfig(lookup)
 	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Database.URL, err = getString(lookup, "DATABASE_URL", defaultDatabaseURL)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.AdminAddr, err = getString(lookup, "WORKER_ADMIN_ADDR", defaultWorkerAdminAddr)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.HTTP.ReadTimeout, err = getDuration(lookup, "HTTP_READ_TIMEOUT", defaultHTTPReadTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.HTTP.ReadHeaderTimeout, err = getDuration(lookup, "HTTP_READ_HEADER_TIMEOUT", defaultHTTPReadHeaderTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.HTTP.WriteTimeout, err = getDuration(lookup, "HTTP_WRITE_TIMEOUT", defaultHTTPWriteTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.HTTP.IdleTimeout, err = getDuration(lookup, "HTTP_IDLE_TIMEOUT", defaultHTTPIdleTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Database.PingTimeout, err = getDuration(lookup, "DB_PING_TIMEOUT", defaultDBPingTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Database.QueryTimeout, err = getDuration(lookup, "DB_QUERY_TIMEOUT", defaultDBQueryTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.PollInterval, err = getDuration(lookup, "WORKER_POLL_INTERVAL", defaultWorkerPollInterval)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.OutboxLockTTL, err = getDuration(lookup, "OUTBOX_LOCK_TTL", defaultOutboxLockTTL)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.PublishTimeout, err = getDuration(lookup, "OUTBOX_PUBLISH_TIMEOUT", defaultOutboxPublishTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.MaxAttempts, err = getInt(lookup, "OUTBOX_MAX_ATTEMPTS", defaultOutboxMaxAttempts)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.BaseBackoff, err = getDuration(lookup, "OUTBOX_BASE_BACKOFF", defaultOutboxBaseBackoff)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.Worker.MaxBackoff, err = getDuration(lookup, "OUTBOX_MAX_BACKOFF", defaultOutboxMaxBackoff)
-	if err != nil {
-		return Config{}, err
+		return commonConfig{}, err
 	}
 
 	cfg.ShutdownTimeout, err = getDuration(lookup, "SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
 	if err != nil {
-		return Config{}, err
+		return commonConfig{}, err
 	}
 
 	cfg.Log.Level, err = getLogLevel(lookup, "LOG_LEVEL", defaultLogLevel)
 	if err != nil {
-		return Config{}, err
+		return commonConfig{}, err
 	}
 
-	if err := validate(cfg); err != nil {
-		return Config{}, err
+	return cfg, nil
+}
+
+func loadHTTPConfig(lookup lookupFunc, addrKey, defaultAddr string) (HTTPConfig, error) {
+	var cfg HTTPConfig
+	var err error
+
+	cfg.Addr, err = getString(lookup, addrKey, defaultAddr)
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	cfg.ReadTimeout, err = getDuration(lookup, "HTTP_READ_TIMEOUT", defaultHTTPReadTimeout)
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	cfg.ReadHeaderTimeout, err = getDuration(lookup, "HTTP_READ_HEADER_TIMEOUT", defaultHTTPReadHeaderTimeout)
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	cfg.WriteTimeout, err = getDuration(lookup, "HTTP_WRITE_TIMEOUT", defaultHTTPWriteTimeout)
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	cfg.IdleTimeout, err = getDuration(lookup, "HTTP_IDLE_TIMEOUT", defaultHTTPIdleTimeout)
+	if err != nil {
+		return HTTPConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+func loadDatabaseConfig(lookup lookupFunc) (DatabaseConfig, error) {
+	var cfg DatabaseConfig
+	var err error
+
+	cfg.URL, err = getString(lookup, "DATABASE_URL", defaultDatabaseURL)
+	if err != nil {
+		return DatabaseConfig{}, err
+	}
+
+	cfg.PingTimeout, err = getDuration(lookup, "DB_PING_TIMEOUT", defaultDBPingTimeout)
+	if err != nil {
+		return DatabaseConfig{}, err
+	}
+
+	cfg.QueryTimeout, err = getDuration(lookup, "DB_QUERY_TIMEOUT", defaultDBQueryTimeout)
+	if err != nil {
+		return DatabaseConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+func loadOutboxConfig(lookup lookupFunc) (OutboxConfig, error) {
+	var cfg OutboxConfig
+	var err error
+
+	cfg.PollInterval, err = getDuration(lookup, "WORKER_POLL_INTERVAL", defaultWorkerPollInterval)
+	if err != nil {
+		return OutboxConfig{}, err
+	}
+
+	cfg.LockTTL, err = getDuration(lookup, "OUTBOX_LOCK_TTL", defaultOutboxLockTTL)
+	if err != nil {
+		return OutboxConfig{}, err
+	}
+
+	cfg.PublishTimeout, err = getDuration(lookup, "OUTBOX_PUBLISH_TIMEOUT", defaultOutboxPublishTimeout)
+	if err != nil {
+		return OutboxConfig{}, err
+	}
+
+	cfg.MaxAttempts, err = getInt(lookup, "OUTBOX_MAX_ATTEMPTS", defaultOutboxMaxAttempts)
+	if err != nil {
+		return OutboxConfig{}, err
+	}
+
+	cfg.BaseBackoff, err = getDuration(lookup, "OUTBOX_BASE_BACKOFF", defaultOutboxBaseBackoff)
+	if err != nil {
+		return OutboxConfig{}, err
+	}
+
+	cfg.MaxBackoff, err = getDuration(lookup, "OUTBOX_MAX_BACKOFF", defaultOutboxMaxBackoff)
+	if err != nil {
+		return OutboxConfig{}, err
 	}
 
 	return cfg, nil
@@ -273,21 +364,21 @@ func getLogLevel(lookup lookupFunc, key string, defaultValue slog.Level) (slog.L
 	}
 }
 
-func validate(cfg Config) error {
-	if cfg.Worker.OutboxLockTTL <= cfg.Worker.PublishTimeout {
+func validateOutbox(cfg OutboxConfig, queryTimeout time.Duration) error {
+	if cfg.LockTTL <= cfg.PublishTimeout {
 		return fmt.Errorf(
 			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",
 		)
 	}
 
-	remainingLeaseTime := cfg.Worker.OutboxLockTTL - cfg.Worker.PublishTimeout
-	if remainingLeaseTime <= cfg.Database.QueryTimeout {
+	remainingLeaseTime := cfg.LockTTL - cfg.PublishTimeout
+	if remainingLeaseTime <= queryTimeout {
 		return fmt.Errorf(
 			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",
 		)
 	}
 
-	if cfg.Worker.MaxBackoff < cfg.Worker.BaseBackoff {
+	if cfg.MaxBackoff < cfg.BaseBackoff {
 		return fmt.Errorf(
 			"OUTBOX_MAX_BACKOFF must be greater than or equal to OUTBOX_BASE_BACKOFF",
 		)
