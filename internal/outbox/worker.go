@@ -17,6 +17,34 @@ const (
 	publishFailureCanceled = "publish_canceled"
 )
 
+var errWorkerFatal = errors.New("outbox worker internal failure")
+
+type workerOperationError struct {
+	operation Operation
+	err       error
+}
+
+func (e *workerOperationError) Error() string {
+	return fmt.Sprintf("outbox %s operation failed", e.operation)
+}
+
+func (e *workerOperationError) Unwrap() error {
+	return e.err
+}
+
+func wrapWorkerOperationError(operation Operation, err error) error {
+	return &workerOperationError{operation: operation, err: err}
+}
+
+func workerErrorOperation(err error) string {
+	var operationErr *workerOperationError
+	if errors.As(err, &operationErr) {
+		return string(operationErr.operation)
+	}
+
+	return "unknown"
+}
+
 type Worker struct {
 	store          Store
 	publisher      Publisher
@@ -144,18 +172,38 @@ func (w *Worker) Run(ctx context.Context, onStarted func()) error {
 			return nil
 
 		case <-timer.C:
-			processed, err := w.RunOnce(ctx)
+			processed, err := w.runOnce(ctx)
 			if err != nil {
-				if ctx.Err() != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 					return nil
 				}
 
-				w.logger.ErrorContext(
-					ctx,
-					"outbox_worker_iteration_failed",
-					slog.String("worker_id", w.workerID),
-					slog.String("error", err.Error()),
-				)
+				operation := workerErrorOperation(err)
+				if errors.Is(err, errStoreUnavailable) {
+					w.logger.ErrorContext(
+						ctx,
+						"outbox_worker_iteration_failed",
+						slog.String("worker_id", w.workerID),
+						slog.String("operation", operation),
+						slog.String("error_class", "store_unavailable"),
+						slog.String("action", "retry"),
+					)
+				} else {
+					w.logger.ErrorContext(
+						ctx,
+						"outbox_worker_iteration_failed",
+						slog.String("worker_id", w.workerID),
+						slog.String("operation", operation),
+						slog.String("error_class", "store_internal"),
+						slog.String("action", "stop"),
+					)
+
+					return fmt.Errorf(
+						"outbox worker %s operation failed: %w",
+						operation,
+						errWorkerFatal,
+					)
+				}
 			}
 
 			wait := w.pollInterval
@@ -168,12 +216,16 @@ func (w *Worker) Run(ctx context.Context, onStarted func()) error {
 	}
 }
 
-func (w *Worker) RunOnce(ctx context.Context) (int, error) {
+func (w *Worker) runOnce(ctx context.Context) (int, error) {
 	event, claimed, err := w.store.ClaimNext(ctx, w.workerID, w.lockTTL)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			return 0, ctxErr
+		}
+
 		w.observer.ObserveClaim(ClaimOutcomeError)
 		w.observer.ObserveOperationError(OperationClaim)
-		return 0, err
+		return 0, wrapWorkerOperationError(OperationClaim, err)
 	}
 
 	if !claimed {
@@ -192,6 +244,10 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	)
 
 	if err := w.processEvent(ctx, event); err != nil {
+		if errors.Is(err, ErrLeaseLost) {
+			return 0, nil
+		}
+
 		return 0, err
 	}
 
@@ -224,7 +280,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 
 	if publishErr == nil {
 		if err := w.store.MarkPublished(ctx, w.workerID, event.ID); err != nil {
-			w.observeTransitionError(event.EventType, OperationMarkPublished, err)
+			err = w.handleTransitionError(ctx, event, OperationMarkPublished, err)
 			return fmt.Errorf("mark published event %q: %w", event.ID, err)
 		}
 
@@ -255,7 +311,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 
 	if failedAttempts >= w.maxAttempts {
 		if err := w.store.MarkDeadLetter(ctx, w.workerID, event.ID, failureReason); err != nil {
-			w.observeTransitionError(event.EventType, OperationMarkDeadLetter, err)
+			err = w.handleTransitionError(ctx, event, OperationMarkDeadLetter, err)
 			return fmt.Errorf("mark event %q dead letter: %w", event.ID, err)
 		}
 
@@ -285,7 +341,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 		failureReason,
 	)
 	if err != nil {
-		w.observeTransitionError(event.EventType, OperationScheduleRetry, err)
+		err = w.handleTransitionError(ctx, event, OperationScheduleRetry, err)
 		return fmt.Errorf("schedule retry for event %q: %w", event.ID, err)
 	}
 
@@ -337,9 +393,32 @@ func classifyPublishOutcome(publishCtx context.Context, err error) PublishOutcom
 	}
 }
 
-func (w *Worker) observeTransitionError(eventType string, operation Operation, err error) {
-	w.observer.ObserveOperationError(operation)
-	if errors.Is(err, ErrLeaseLost) {
-		w.observer.ObserveLeaseLoss(eventType, operation)
+func (w *Worker) handleTransitionError(
+	ctx context.Context,
+	event Event,
+	operation Operation,
+	err error,
+) error {
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+		return ctxErr
 	}
+
+	if errors.Is(err, ErrLeaseLost) {
+		w.observer.ObserveLeaseLoss(event.EventType, operation)
+
+		w.logger.WarnContext(
+			ctx,
+			"outbox_event_lease_lost",
+			slog.String("worker_id", w.workerID),
+			slog.String("event_id", event.ID),
+			slog.String("event_type", event.EventType),
+			slog.String("operation", string(operation)),
+		)
+
+		return ErrLeaseLost
+	}
+
+	w.observer.ObserveOperationError(operation)
+
+	return wrapWorkerOperationError(operation, err)
 }

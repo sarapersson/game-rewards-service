@@ -90,7 +90,11 @@ func run(ctx context.Context) int {
 
 	workerID := newWorkerID(cfg.ServiceName)
 
-	store := outbox.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
+	store, err := outbox.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
+	if err != nil {
+		logger.Error("create outbox store", slog.Any("error", err))
+		return 1
+	}
 
 	publisher, err := outbox.NewLoggingPublisher(logger)
 	if err != nil {

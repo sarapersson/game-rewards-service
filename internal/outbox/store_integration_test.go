@@ -22,7 +22,7 @@ const (
 
 func TestPostgresStoreClaimNextClaimsPendingEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -96,7 +96,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreClaimNextSkipsFuturePendingEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -159,7 +159,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreClaimNextReclaimsExpiredProcessingEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -229,7 +229,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreClaimNextSkipsActiveProcessingEvent(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -289,8 +289,8 @@ func TestPostgresStoreClaimNextDoesNotDoubleClaimConcurrently(t *testing.T) {
 	firstPool := openIntegrationPool(t)
 	secondPool := openIntegrationPool(t)
 
-	firstStore := NewPostgresStore(firstPool, integrationQueryTimeout)
-	secondStore := NewPostgresStore(secondPool, integrationQueryTimeout)
+	firstStore := mustNewPostgresStore(t, firstPool, integrationQueryTimeout)
+	secondStore := mustNewPostgresStore(t, secondPool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -322,7 +322,7 @@ func TestPostgresStoreClaimNextDoesNotDoubleClaimConcurrently(t *testing.T) {
 	start := make(chan struct{})
 	results := make(chan claimResult, 2)
 
-	claim := func(store *PostgresStore, workerID string) {
+	claim := func(store Store, workerID string) {
 		<-start
 
 		event, claimed, err := store.ClaimNext(context.Background(), workerID, time.Hour)
@@ -400,7 +400,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreMarkPublished(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -472,7 +472,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreScheduleRetryUsesDatabaseTime(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -595,7 +595,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreMarkDeadLetter(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -692,7 +692,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreAllowsLeaseOwnerToCompleteExpiredUnreclaimedLease(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -754,7 +754,7 @@ WHERE id = $1`,
 
 func TestPostgresStoreStaleWorkerCannotOverwriteReclaimedLease(t *testing.T) {
 	pool := openIntegrationPool(t)
-	store := NewPostgresStore(pool, integrationQueryTimeout)
+	store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 	eventID := integrationEventID(t)
 	aggregateID := integrationEventID(t)
@@ -879,7 +879,7 @@ func TestPostgresStoreClaimNextSkipsTerminalEvents(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pool := openIntegrationPool(t)
-			store := NewPostgresStore(pool, integrationQueryTimeout)
+			store := mustNewPostgresStore(t, pool, integrationQueryTimeout)
 
 			eventID := integrationEventID(t)
 			aggregateID := integrationEventID(t)
@@ -936,7 +936,7 @@ func TestPostgresStoreAppliesQueryTimeout(t *testing.T) {
 	lockPool := openIntegrationPool(t)
 	workerPool := openIntegrationPool(t)
 
-	store := NewPostgresStore(workerPool, 100*time.Millisecond)
+	store := mustNewPostgresStore(t, workerPool, 100*time.Millisecond)
 
 	lockCtx, cancelLock := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelLock()
@@ -963,10 +963,27 @@ func TestPostgresStoreAppliesQueryTimeout(t *testing.T) {
 		t.Fatal("expected ClaimNext to time out, got nil")
 	}
 
-	if !errors.Is(err, context.DeadlineExceeded) &&
-		!strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
-		t.Fatalf("ClaimNext error = %v, want context deadline exceeded", err)
+	if !errors.Is(err, errStoreUnavailable) {
+		t.Fatalf("ClaimNext error = %v, want errStoreUnavailable", err)
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ClaimNext error = %v, did not want caller deadline", err)
+	}
+}
+
+func mustNewPostgresStore(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	queryTimeout time.Duration,
+) Store {
+	t.Helper()
+
+	store, err := NewPostgresStore(pool, queryTimeout)
+	if err != nil {
+		t.Fatalf("NewPostgresStore returned error: %v", err)
+	}
+
+	return store
 }
 
 func openIntegrationPool(t *testing.T) *pgxpool.Pool {

@@ -4,13 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrLeaseLost = errors.New("outbox event lease lost")
+const (
+	postgresSQLStateConnectionException          = "08000"
+	postgresSQLStateUnableToEstablishConnection  = "08001"
+	postgresSQLStateConnectionDoesNotExist       = "08003"
+	postgresSQLStateServerRejectedConnection     = "08004"
+	postgresSQLStateConnectionFailure            = "08006"
+	postgresSQLStateTransactionResolutionUnknown = "08007"
+	postgresSQLStateTooManyConnections           = "53300"
+	postgresSQLStateAdminShutdown                = "57P01"
+	postgresSQLStateCrashShutdown                = "57P02"
+	postgresSQLStateCannotConnectNow             = "57P03"
+)
+
+var (
+	ErrLeaseLost = errors.New("outbox event lease lost")
+
+	errStoreUnavailable     = errors.New("outbox store unavailable")
+	errStoreInternal        = errors.New("outbox store internal error")
+	errPostgresQueryTimeout = errors.New("postgres outbox query timeout")
+)
 
 type Store interface {
 	ClaimNext(ctx context.Context, workerID string, lockTTL time.Duration) (Event, bool, error)
@@ -24,16 +46,23 @@ type Store interface {
 	MarkDeadLetter(ctx context.Context, workerID, eventID, lastError string) error
 }
 
-type PostgresStore struct {
+type postgresStore struct {
 	pool         *pgxpool.Pool
 	queryTimeout time.Duration
 }
 
-func NewPostgresStore(pool *pgxpool.Pool, queryTimeout time.Duration) *PostgresStore {
-	return &PostgresStore{pool: pool, queryTimeout: queryTimeout}
+func NewPostgresStore(pool *pgxpool.Pool, queryTimeout time.Duration) (Store, error) {
+	if pool == nil {
+		return nil, errors.New("postgres outbox pool is required")
+	}
+	if queryTimeout <= 0 {
+		return nil, errors.New("postgres outbox query timeout must be greater than zero")
+	}
+
+	return &postgresStore{pool: pool, queryTimeout: queryTimeout}, nil
 }
 
-func (s *PostgresStore) ClaimNext(
+func (s *postgresStore) ClaimNext(
 	ctx context.Context,
 	workerID string,
 	lockTTL time.Duration,
@@ -46,10 +75,7 @@ func (s *PostgresStore) ClaimNext(
 		return Event{}, false, fmt.Errorf("lock ttl must be greater than zero")
 	}
 
-	queryCtx, cancel, err := s.queryContext(ctx)
-	if err != nil {
-		return Event{}, false, err
-	}
+	queryCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -92,7 +118,7 @@ RETURNING
 		payload []byte
 	)
 
-	err = s.pool.QueryRow(
+	err := s.pool.QueryRow(
 		queryCtx,
 		query,
 		workerID,
@@ -113,7 +139,7 @@ RETURNING
 			return Event{}, false, nil
 		}
 
-		return Event{}, false, fmt.Errorf("claim next outbox event: %w", err)
+		return Event{}, false, fmt.Errorf("claim next outbox event: %w", mapPostgresError(queryCtx, err))
 	}
 
 	event.Payload = payload
@@ -121,7 +147,7 @@ RETURNING
 	return event, true, nil
 }
 
-func (s *PostgresStore) MarkPublished(ctx context.Context, workerID, eventID string) error {
+func (s *postgresStore) MarkPublished(ctx context.Context, workerID, eventID string) error {
 	if workerID == "" {
 		return fmt.Errorf("worker id must not be empty")
 	}
@@ -130,10 +156,7 @@ func (s *PostgresStore) MarkPublished(ctx context.Context, workerID, eventID str
 		return fmt.Errorf("event id must not be empty")
 	}
 
-	queryCtx, cancel, err := s.queryContext(ctx)
-	if err != nil {
-		return err
-	}
+	queryCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -151,7 +174,7 @@ WHERE id = $1
 
 	result, err := s.pool.Exec(queryCtx, query, eventID, workerID)
 	if err != nil {
-		return fmt.Errorf("mark outbox event published: %w", err)
+		return fmt.Errorf("mark outbox event published: %w", mapPostgresError(queryCtx, err))
 	}
 
 	if result.RowsAffected() != 1 {
@@ -161,7 +184,7 @@ WHERE id = $1
 	return nil
 }
 
-func (s *PostgresStore) ScheduleRetry(
+func (s *postgresStore) ScheduleRetry(
 	ctx context.Context,
 	workerID, eventID string,
 	retryDelay time.Duration,
@@ -179,10 +202,7 @@ func (s *PostgresStore) ScheduleRetry(
 		return time.Time{}, fmt.Errorf("retry delay must be greater than zero")
 	}
 
-	queryCtx, cancel, err := s.queryContext(ctx)
-	if err != nil {
-		return time.Time{}, err
-	}
+	queryCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -202,7 +222,7 @@ RETURNING available_at;
 
 	var nextAvailableAt time.Time
 
-	err = s.pool.QueryRow(
+	err := s.pool.QueryRow(
 		queryCtx,
 		query,
 		eventID,
@@ -215,13 +235,13 @@ RETURNING available_at;
 			return time.Time{}, fmt.Errorf("schedule outbox event retry: %w", ErrLeaseLost)
 		}
 
-		return time.Time{}, fmt.Errorf("schedule outbox event retry: %w", err)
+		return time.Time{}, fmt.Errorf("schedule outbox event retry: %w", mapPostgresError(queryCtx, err))
 	}
 
 	return nextAvailableAt, nil
 }
 
-func (s *PostgresStore) MarkDeadLetter(
+func (s *postgresStore) MarkDeadLetter(
 	ctx context.Context,
 	workerID, eventID, lastError string,
 ) error {
@@ -233,10 +253,7 @@ func (s *PostgresStore) MarkDeadLetter(
 		return fmt.Errorf("event id must not be empty")
 	}
 
-	queryCtx, cancel, err := s.queryContext(ctx)
-	if err != nil {
-		return err
-	}
+	queryCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 
 	const query = `
@@ -255,7 +272,7 @@ WHERE id = $1
 
 	result, err := s.pool.Exec(queryCtx, query, eventID, workerID, lastError)
 	if err != nil {
-		return fmt.Errorf("mark outbox event dead letter: %w", err)
+		return fmt.Errorf("mark outbox event dead letter: %w", mapPostgresError(queryCtx, err))
 	}
 
 	if result.RowsAffected() != 1 {
@@ -265,16 +282,67 @@ WHERE id = $1
 	return nil
 }
 
-func (s *PostgresStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if s == nil || s.pool == nil {
-		return nil, nil, fmt.Errorf("outbox store is not initialized")
+func (s *postgresStore) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, s.queryTimeout, errPostgresQueryTimeout)
+}
+
+func mapPostgresError(ctx context.Context, err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if isPostgresUnavailableSQLState(pgErr.Code) {
+			return fmt.Errorf("postgres outbox operation: %w", errStoreUnavailable)
+		}
+
+		return fmt.Errorf("postgres outbox operation: %w", errStoreInternal)
 	}
 
-	if s.queryTimeout <= 0 {
-		return nil, nil, fmt.Errorf("outbox store query timeout must be greater than zero")
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("postgres outbox operation returned no row: %w", errStoreInternal)
 	}
 
-	queryCtx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	if ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		if errors.Is(context.Cause(ctx), errPostgresQueryTimeout) {
+			return fmt.Errorf("postgres outbox operation: %w", errStoreUnavailable)
+		}
 
-	return queryCtx, cancel, nil
+		return ctx.Err()
+	}
+
+	if errors.Is(err, pgconn.ErrConnClosed) || pgconn.Timeout(err) || isNetworkUnavailableError(err) {
+		return fmt.Errorf("postgres outbox operation: %w", errStoreUnavailable)
+	}
+
+	return fmt.Errorf("postgres outbox operation: %w", errStoreInternal)
+}
+
+func isNetworkUnavailableError(err error) bool {
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+
+	var operationErr *net.OpError
+	return errors.As(err, &operationErr)
+}
+
+func isPostgresUnavailableSQLState(code string) bool {
+	switch code {
+	case postgresSQLStateConnectionException,
+		postgresSQLStateConnectionDoesNotExist,
+		postgresSQLStateConnectionFailure,
+		postgresSQLStateUnableToEstablishConnection,
+		postgresSQLStateServerRejectedConnection,
+		postgresSQLStateTransactionResolutionUnknown,
+		postgresSQLStateTooManyConnections,
+		postgresSQLStateAdminShutdown,
+		postgresSQLStateCrashShutdown,
+		postgresSQLStateCannotConnectNow:
+		return true
+	default:
+		return false
+	}
 }

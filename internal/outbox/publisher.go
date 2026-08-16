@@ -18,25 +18,21 @@ type Publisher interface {
 	Publish(ctx context.Context, event Event) error
 }
 
-// LoggingPublisher is a local development publisher that records a simulated
+// loggingPublisher is a local development publisher that records a simulated
 // successful publish without sending the event to an external system.
-type LoggingPublisher struct {
+type loggingPublisher struct {
 	logger *slog.Logger
 }
 
-func NewLoggingPublisher(logger *slog.Logger) (*LoggingPublisher, error) {
+func NewLoggingPublisher(logger *slog.Logger) (Publisher, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger must not be nil")
 	}
 
-	return &LoggingPublisher{logger: logger}, nil
+	return &loggingPublisher{logger: logger}, nil
 }
 
-func (p *LoggingPublisher) Publish(ctx context.Context, event Event) error {
-	if p == nil || p.logger == nil {
-		return fmt.Errorf("logging publisher is not initialized")
-	}
-
+func (p *loggingPublisher) Publish(ctx context.Context, event Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

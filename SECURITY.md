@@ -25,7 +25,7 @@ The service does **not** implement authentication or authorization, rate limitin
 * Requests are bounded and strictly decoded: valid UTF-8, a 64 KiB body limit, unknown-field rejection, single-JSON-value enforcement, bounded reward identifiers, and exactly one validated `Idempotency-Key`.
 * Raw idempotency keys are SHA-256 hashed before persistence.
 * PostgreSQL constraints enforce critical invariants, and claim creation, idempotency completion, and outbox creation commit atomically.
-* Known dependency-availability failures are distinguished from unexpected internal, schema, and invariant failures; low-level database and network details are not returned to clients.
+* Known dependency-availability failures are distinguished from unexpected internal, schema, and invariant failures; low-level database and network details are not returned to clients or exposed by worker store failure logs.
 * HTTP, database, publisher, and shutdown operations use explicit timeouts.
 * API shutdown force-closes remaining HTTP connections after the graceful timeout, and reward-claim transaction rollback uses an independent bounded cleanup context.
 * Worker publishing uses leases and ownership-fenced finalization; no database transaction or row lock is held while the publisher executes.
@@ -43,7 +43,7 @@ Do not log or commit:
 * full request bodies or outbox payloads;
 * raw publisher errors or other low-level details that may expose sensitive configuration.
 
-The application uses structured `log/slog` logging. Publisher failures are reduced to controlled classifications before persistence, and API responses sanitize low-level database and network failures. Unexpected reward-claim failures are logged with bounded error classifications and request correlation context rather than raw errors or claim identifiers.
+The application uses structured `log/slog` logging. Publisher failures are reduced to controlled classifications before persistence, API responses sanitize low-level database and network failures, and worker store failures are reduced to bounded availability/internal classifications before process-level logging. Unexpected reward-claim failures are logged with bounded error classifications and request correlation context rather than raw errors or claim identifiers.
 
 Operational identifiers such as request IDs, event IDs, aggregate IDs, or worker IDs may appear in logs when useful for debugging and correlation. They are not used as Prometheus metric labels.
 
