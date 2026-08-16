@@ -1,13 +1,23 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
-FROM golang:1.27rc2-trixie@sha256:2db0e0e18bbc0433b75a534f988865a860c7f91198c3953acf602f128cd23b6d AS build
+FROM golang:1.26.6-trixie@sha256:b75d466dd608587fd66cca705a307ba65b889827d06ad61d6a75f0482b51b7c7 AS build
 
 ENV GOTOOLCHAIN=local
 
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN expected="$(sed -n 's/^toolchain //p' go.mod)" && \
+    actual="$(go env GOVERSION)" && \
+    if [ -z "$expected" ]; then \
+        echo "go.mod is missing the required toolchain directive" >&2; \
+        exit 1; \
+    fi && \
+    if [ "$actual" != "$expected" ]; then \
+        echo "Go toolchain mismatch: go.mod requires $expected, Docker builder provides $actual" >&2; \
+        exit 1; \
+    fi && \
+    go mod download
 
 COPY . .
 
