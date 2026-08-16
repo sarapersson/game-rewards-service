@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	DuplicateClaimErrorCode    = "reward_already_claimed"
-	DuplicateClaimErrorMessage = "Reward has already been claimed"
+	duplicateClaimErrorCode    = "reward_already_claimed"
+	duplicateClaimErrorMessage = "Reward has already been claimed"
 )
 
 type createClaimResponse struct {
@@ -34,9 +34,9 @@ type errorBody struct {
 	Message string `json:"message"`
 }
 
-func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, claim Claim, linkedClaimID string) error {
+func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, requested claimToCreate, linkedClaimID string) error {
 	switch statusCode {
-	case CreateClaimStatusCreated:
+	case createClaimStatusCreated:
 		var response createClaimResponse
 		if !decodeStrictJSONResponse(responseBody, &response) {
 			return fmt.Errorf("invalid stored reward claim response body: %w", ErrInternal)
@@ -45,10 +45,10 @@ func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, clai
 		if linkedClaimID == "" ||
 			response.ClaimID != linkedClaimID ||
 			!validUUID(response.ClaimID) ||
-			response.PlayerID != claim.PlayerID ||
-			response.CampaignID != claim.CampaignID ||
-			response.RewardID != claim.RewardID ||
-			response.Status != ClaimStatusClaimed {
+			response.PlayerID != requested.PlayerID ||
+			response.CampaignID != requested.CampaignID ||
+			response.RewardID != requested.RewardID ||
+			response.Status != claimStatusClaimed {
 			return fmt.Errorf("stored reward claim response does not match request: %w", ErrInternal)
 		}
 
@@ -56,7 +56,7 @@ func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, clai
 			return fmt.Errorf("stored reward claim response has invalid claimed_at: %w", ErrInternal)
 		}
 
-	case CreateClaimStatusConflict:
+	case createClaimStatusConflict:
 		if linkedClaimID != "" {
 			return fmt.Errorf("stored duplicate reward claim response has claim link: %w", ErrInternal)
 		}
@@ -66,7 +66,7 @@ func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, clai
 			return fmt.Errorf("invalid stored duplicate reward claim response body: %w", ErrInternal)
 		}
 
-		if response.Error.Code != DuplicateClaimErrorCode || response.Error.Message == "" {
+		if response.Error.Code != duplicateClaimErrorCode || response.Error.Message == "" {
 			return fmt.Errorf("unexpected stored duplicate reward claim response: %w", ErrInternal)
 		}
 
@@ -107,13 +107,13 @@ func validUUID(value string) bool {
 	return err == nil
 }
 
-func MarshalCreatedClaimResponse(claim Claim) ([]byte, error) {
+func marshalCreatedClaimResponse(claim claim) ([]byte, error) {
 	body, err := json.Marshal(createClaimResponse{
 		ClaimID:    claim.ID,
 		PlayerID:   claim.PlayerID,
 		CampaignID: claim.CampaignID,
 		RewardID:   claim.RewardID,
-		Status:     claim.Status,
+		Status:     claimStatusClaimed,
 		ClaimedAt:  claim.CreatedAt.UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -123,11 +123,11 @@ func MarshalCreatedClaimResponse(claim Claim) ([]byte, error) {
 	return body, nil
 }
 
-func MarshalDuplicateClaimResponse() ([]byte, error) {
+func marshalDuplicateClaimResponse() ([]byte, error) {
 	body, err := json.Marshal(errorResponse{
 		Error: errorBody{
-			Code:    DuplicateClaimErrorCode,
-			Message: DuplicateClaimErrorMessage,
+			Code:    duplicateClaimErrorCode,
+			Message: duplicateClaimErrorMessage,
 		},
 	})
 	if err != nil {

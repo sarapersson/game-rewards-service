@@ -5,40 +5,57 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
-type Store interface {
-	CreateClaim(ctx context.Context, cmd CreateClaimStoreCommand) (CreateClaimResult, error)
-}
-
 type Service struct {
-	store Store
+	pool         *pgxpool.Pool
+	queryTimeout time.Duration
 }
 
-func NewService(store Store) (*Service, error) {
-	if store == nil {
-		return nil, errors.New("reward claim store is required")
+func NewService(pool *pgxpool.Pool, queryTimeout time.Duration) (*Service, error) {
+	if pool == nil {
+		return nil, errors.New("reward claim pool is required")
+	}
+	if queryTimeout <= 0 {
+		return nil, errors.New("reward claim query timeout must be greater than zero")
 	}
 
-	return &Service{store: store}, nil
+	return &Service{pool: pool, queryTimeout: queryTimeout}, nil
 }
 
 func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (CreateClaimResult, error) {
+	params, err := prepareCreateClaim(cmd)
+	if err != nil {
+		return CreateClaimResult{}, err
+	}
+
+	result, err := s.createClaim(ctx, params)
+	if err != nil {
+		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
+	}
+
+	return result, nil
+}
+
+func prepareCreateClaim(cmd CreateClaimCommand) (createClaimParams, error) {
 	cmd.PlayerID = strings.TrimSpace(cmd.PlayerID)
 	cmd.CampaignID = strings.TrimSpace(cmd.CampaignID)
 	cmd.RewardID = strings.TrimSpace(cmd.RewardID)
 	cmd.IdempotencyKey = strings.TrimSpace(cmd.IdempotencyKey)
 
 	if err := validateCreateClaimCommand(cmd); err != nil {
-		return CreateClaimResult{}, err
+		return createClaimParams{}, err
 	}
 
 	keyHash, err := idempotency.HashKey(cmd.IdempotencyKey)
 	if err != nil {
-		return CreateClaimResult{}, ValidationError{
+		return createClaimParams{}, ValidationError{
 			Field:   "idempotency_key",
 			Message: "idempotency key is invalid",
 		}
@@ -50,30 +67,19 @@ func (s *Service) CreateClaim(ctx context.Context, cmd CreateClaimCommand) (Crea
 		RewardID:   cmd.RewardID,
 	})
 	if err != nil {
-		return CreateClaimResult{}, fmt.Errorf("hash reward claim request: %w", ErrInternal)
+		return createClaimParams{}, fmt.Errorf("hash reward claim request: %w", ErrInternal)
 	}
 
-	id := newUUIDV4()
-
-	claim := Claim{
-		ID:         id,
-		PlayerID:   cmd.PlayerID,
-		CampaignID: cmd.CampaignID,
-		RewardID:   cmd.RewardID,
-		Status:     ClaimStatusClaimed,
-	}
-
-	result, err := s.store.CreateClaim(ctx, CreateClaimStoreCommand{
-		Claim:       claim,
-		Operation:   idempotency.RewardClaimOperation,
-		KeyHash:     keyHash[:],
-		RequestHash: requestHash[:],
-	})
-	if err != nil {
-		return CreateClaimResult{}, fmt.Errorf("create reward claim: %w", err)
-	}
-
-	return result, nil
+	return createClaimParams{
+		Claim: claimToCreate{
+			ID:         newUUIDV4(),
+			PlayerID:   cmd.PlayerID,
+			CampaignID: cmd.CampaignID,
+			RewardID:   cmd.RewardID,
+		},
+		KeyHash:     keyHash,
+		RequestHash: requestHash,
+	}, nil
 }
 
 func validateCreateClaimCommand(cmd CreateClaimCommand) error {

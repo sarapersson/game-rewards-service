@@ -1,9 +1,11 @@
 package rewards
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 const (
@@ -12,18 +14,50 @@ const (
 	responseTestClaimedAt = "2026-08-11T12:00:00.123456Z"
 )
 
+func TestMarshalCreatedClaimResponseGolden(t *testing.T) {
+	claimedAt := time.Date(2026, 8, 16, 13, 45, 12, 123456000, time.UTC)
+
+	body, err := marshalCreatedClaimResponse(claim{
+		ID:         responseTestClaimID,
+		PlayerID:   "player-123",
+		CampaignID: "campaign-123",
+		RewardID:   "reward-123",
+		CreatedAt:  claimedAt,
+	})
+	if err != nil {
+		t.Fatalf("marshalCreatedClaimResponse returned error: %v", err)
+	}
+
+	want := []byte(`{"claim_id":"11111111-1111-4111-8111-111111111111","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","status":"claimed","claimed_at":"2026-08-16T13:45:12.123456Z"}`)
+	if !bytes.Equal(body, want) {
+		t.Fatalf("created response = %s, want %s", body, want)
+	}
+}
+
+func TestMarshalDuplicateClaimResponseGolden(t *testing.T) {
+	body, err := marshalDuplicateClaimResponse()
+	if err != nil {
+		t.Fatalf("marshalDuplicateClaimResponse returned error: %v", err)
+	}
+
+	want := []byte(`{"error":{"code":"reward_already_claimed","message":"Reward has already been claimed"}}`)
+	if !bytes.Equal(body, want) {
+		t.Fatalf("duplicate response = %s, want %s", body, want)
+	}
+}
+
 func TestValidateStoredCreateClaimResponseAcceptsCompatibleResponses(t *testing.T) {
 	claim := responseValidationClaim()
 	created := responseForClaim(claim)
 	created.ClaimID = responseTestReplayID
 
-	duplicateBody, err := MarshalDuplicateClaimResponse()
+	duplicateBody, err := marshalDuplicateClaimResponse()
 	if err != nil {
-		t.Fatalf("MarshalDuplicateClaimResponse returned error: %v", err)
+		t.Fatalf("marshalDuplicateClaimResponse returned error: %v", err)
 	}
 	compatibleDuplicateBody := mustJSON(t, errorResponse{
 		Error: errorBody{
-			Code:    DuplicateClaimErrorCode,
+			Code:    duplicateClaimErrorCode,
 			Message: "Reward was already claimed",
 		},
 	})
@@ -36,18 +70,18 @@ func TestValidateStoredCreateClaimResponseAcceptsCompatibleResponses(t *testing.
 	}{
 		{
 			name:          "created",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			body:          mustJSON(t, created),
 			linkedClaimID: responseTestReplayID,
 		},
 		{
 			name:       "duplicate",
-			statusCode: CreateClaimStatusConflict,
+			statusCode: createClaimStatusConflict,
 			body:       duplicateBody,
 		},
 		{
 			name:       "duplicate with compatible historical message",
-			statusCode: CreateClaimStatusConflict,
+			statusCode: createClaimStatusConflict,
 			body:       compatibleDuplicateBody,
 		},
 	}
@@ -88,84 +122,84 @@ func TestValidateStoredCreateClaimResponseRejectsInvalidResponses(t *testing.T) 
 		},
 		{
 			name:       "created missing claim link",
-			statusCode: CreateClaimStatusCreated,
+			statusCode: createClaimStatusCreated,
 			body:       validCreatedBody,
 		},
 		{
 			name:          "created mismatched claim link",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			body:          validCreatedBody,
 			linkedClaimID: responseTestReplayID,
 		},
 		{
 			name:          "duplicate with claim link",
-			statusCode:    CreateClaimStatusConflict,
+			statusCode:    createClaimStatusConflict,
 			body:          []byte(`{"error":{"code":"reward_already_claimed","message":"Reward has already been claimed"}}`),
 			linkedClaimID: responseTestClaimID,
 		},
 		{
 			name:          "empty body",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 		},
 		{
 			name:          "malformed JSON",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body:          []byte(`{"claim_id":`),
 		},
 		{
 			name:       "invalid UTF-8",
-			statusCode: CreateClaimStatusConflict,
+			statusCode: createClaimStatusConflict,
 			body: []byte(
 				"{\"error\":{\"code\":\"reward_already_claimed\",\"message\":\"\xff\"}}",
 			),
 		},
 		{
 			name:          "trailing JSON value",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body:          append(append([]byte(nil), validCreatedBody...), []byte(`{}`)...),
 		},
 		{
 			name:          "created empty object",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body:          []byte(`{}`),
 		},
 		{
 			name:          "created unknown field",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body: []byte(`{"claim_id":"` + responseTestClaimID +
 				`","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","status":"claimed","claimed_at":"` + responseTestClaimedAt + `","extra":true}`),
 		},
 		{
 			name:          "created mismatched request",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body:          mustJSON(t, mismatchedRequest),
 		},
 		{
 			name:          "created wrong status",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body:          mustJSON(t, wrongStatus),
 		},
 		{
 			name:          "created invalid claimed_at",
-			statusCode:    CreateClaimStatusCreated,
+			statusCode:    createClaimStatusCreated,
 			linkedClaimID: responseTestClaimID,
 			body:          mustJSON(t, invalidClaimedAt),
 		},
 		{
 			name:       "duplicate missing message",
-			statusCode: CreateClaimStatusConflict,
+			statusCode: createClaimStatusConflict,
 			body:       []byte(`{"error":{"code":"reward_already_claimed"}}`),
 		},
 		{
 			name:       "duplicate wrong code",
-			statusCode: CreateClaimStatusConflict,
+			statusCode: createClaimStatusConflict,
 			body:       []byte(`{"error":{"code":"idempotency_key_reused","message":"Reward has already been claimed"}}`),
 		},
 	}
@@ -205,23 +239,22 @@ func TestValidUUID(t *testing.T) {
 	}
 }
 
-func responseValidationClaim() Claim {
-	return Claim{
+func responseValidationClaim() claimToCreate {
+	return claimToCreate{
 		ID:         responseTestClaimID,
 		PlayerID:   "player-123",
 		CampaignID: "campaign-123",
 		RewardID:   "reward-123",
-		Status:     ClaimStatusClaimed,
 	}
 }
 
-func responseForClaim(claim Claim) createClaimResponse {
+func responseForClaim(claim claimToCreate) createClaimResponse {
 	return createClaimResponse{
 		ClaimID:    claim.ID,
 		PlayerID:   claim.PlayerID,
 		CampaignID: claim.CampaignID,
 		RewardID:   claim.RewardID,
-		Status:     ClaimStatusClaimed,
+		Status:     claimStatusClaimed,
 		ClaimedAt:  responseTestClaimedAt,
 	}
 }

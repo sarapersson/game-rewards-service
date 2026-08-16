@@ -77,13 +77,7 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
-	rewardStore, err := rewards.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
-	if err != nil {
-		logger.Error("create reward claim store", slog.Any("error", err))
-		return 1
-	}
-
-	rewardService, err := rewards.NewService(rewardStore)
+	rewardService, err := rewards.NewService(dbPool, cfg.Database.QueryTimeout)
 	if err != nil {
 		logger.Error("create reward claim service", slog.Any("error", err))
 		return 1

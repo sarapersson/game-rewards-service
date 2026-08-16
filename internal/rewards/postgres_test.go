@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type rollbackTestTx struct {
@@ -24,41 +23,7 @@ func (tx *rollbackTestTx) Rollback(ctx context.Context) error {
 	return tx.rollbackFn(ctx)
 }
 
-func mustNewPostgresStore(t *testing.T, pool *pgxpool.Pool, queryTimeout time.Duration) *PostgresStore {
-	t.Helper()
-
-	store, err := NewPostgresStore(pool, queryTimeout)
-	if err != nil {
-		t.Fatalf("NewPostgresStore returned error: %v", err)
-	}
-
-	return store
-}
-
-func TestNewPostgresStoreValidatesConstruction(t *testing.T) {
-	tests := []struct {
-		name         string
-		pool         *pgxpool.Pool
-		queryTimeout time.Duration
-	}{
-		{name: "missing pool", queryTimeout: time.Second},
-		{name: "non-positive query timeout", pool: new(pgxpool.Pool)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			store, err := NewPostgresStore(tt.pool, tt.queryTimeout)
-			if err == nil {
-				t.Fatal("NewPostgresStore returned nil error")
-			}
-			if store != nil {
-				t.Fatalf("NewPostgresStore store = %#v, want nil", store)
-			}
-		})
-	}
-}
-
-func TestPostgresStoreRollbackTransactionIsBounded(t *testing.T) {
+func TestServiceRollbackTransactionIsBounded(t *testing.T) {
 	const timeout = 20 * time.Millisecond
 
 	type rollbackObservation struct {
@@ -80,10 +45,10 @@ func TestPostgresStoreRollbackTransactionIsBounded(t *testing.T) {
 		},
 	}
 
-	store := &PostgresStore{queryTimeout: timeout}
+	service := &Service{queryTimeout: timeout}
 	done := make(chan struct{})
 	go func() {
-		store.rollbackTransaction(tx)
+		service.rollbackTransaction(tx)
 		close(done)
 	}()
 
@@ -239,9 +204,9 @@ func TestMapPostgresErrorDoesNotOverrideConcreteFailureWithLateCancellation(t *t
 	}
 }
 
-func TestMapPostgresErrorMapsStoreQueryTimeoutToUnavailable(t *testing.T) {
-	store := mustNewPostgresStore(t, new(pgxpool.Pool), time.Nanosecond)
-	queryCtx, cancel := store.queryContext(context.Background())
+func TestMapPostgresErrorMapsServiceQueryTimeoutToUnavailable(t *testing.T) {
+	service := &Service{queryTimeout: time.Nanosecond}
+	queryCtx, cancel := service.queryContext(context.Background())
 	defer cancel()
 	<-queryCtx.Done()
 
