@@ -4,26 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
 
-const (
-	postgresSQLStateConnectionException          = "08000"
-	postgresSQLStateUnableToEstablishConnection  = "08001"
-	postgresSQLStateConnectionDoesNotExist       = "08003"
-	postgresSQLStateServerRejectedConnection     = "08004"
-	postgresSQLStateConnectionFailure            = "08006"
-	postgresSQLStateTransactionResolutionUnknown = "08007"
-	postgresSQLStateTooManyConnections           = "53300"
-	postgresSQLStateAdminShutdown                = "57P01"
-	postgresSQLStateCrashShutdown                = "57P02"
-	postgresSQLStateCannotConnectNow             = "57P03"
+	"github.com/sarapersson/game-rewards-service/internal/postgres"
 )
 
 var (
@@ -287,15 +273,6 @@ func (s *postgresStore) queryContext(ctx context.Context) (context.Context, cont
 }
 
 func mapPostgresError(ctx context.Context, err error) error {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		if isPostgresUnavailableSQLState(pgErr.Code) {
-			return fmt.Errorf("postgres outbox operation: %w", errStoreUnavailable)
-		}
-
-		return fmt.Errorf("postgres outbox operation: %w", errStoreInternal)
-	}
-
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("postgres outbox operation returned no row: %w", errStoreInternal)
 	}
@@ -308,41 +285,9 @@ func mapPostgresError(ctx context.Context, err error) error {
 		return ctx.Err()
 	}
 
-	if errors.Is(err, pgconn.ErrConnClosed) || pgconn.Timeout(err) || isNetworkUnavailableError(err) {
+	if postgres.IsUnavailable(err) {
 		return fmt.Errorf("postgres outbox operation: %w", errStoreUnavailable)
 	}
 
 	return fmt.Errorf("postgres outbox operation: %w", errStoreInternal)
-}
-
-func isNetworkUnavailableError(err error) bool {
-	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-
-	var networkErr net.Error
-	if errors.As(err, &networkErr) && networkErr.Timeout() {
-		return true
-	}
-
-	var operationErr *net.OpError
-	return errors.As(err, &operationErr)
-}
-
-func isPostgresUnavailableSQLState(code string) bool {
-	switch code {
-	case postgresSQLStateConnectionException,
-		postgresSQLStateConnectionDoesNotExist,
-		postgresSQLStateConnectionFailure,
-		postgresSQLStateUnableToEstablishConnection,
-		postgresSQLStateServerRejectedConnection,
-		postgresSQLStateTransactionResolutionUnknown,
-		postgresSQLStateTooManyConnections,
-		postgresSQLStateAdminShutdown,
-		postgresSQLStateCrashShutdown,
-		postgresSQLStateCannotConnectNow:
-		return true
-	default:
-		return false
-	}
 }

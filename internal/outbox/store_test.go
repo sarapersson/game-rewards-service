@@ -45,31 +45,7 @@ func TestMapPostgresErrorClassifiesFailures(t *testing.T) {
 		want error
 	}{
 		{
-			name: "availability SQLSTATE",
-			err: &pgconn.PgError{
-				Code:    postgresSQLStateAdminShutdown,
-				Message: sensitiveMessage,
-			},
-			want: errStoreUnavailable,
-		},
-		{
-			name: "schema SQLSTATE",
-			err: &pgconn.PgError{
-				Code:    "42P01",
-				Message: sensitiveMessage,
-			},
-			want: errStoreInternal,
-		},
-		{
-			name: "permission SQLSTATE",
-			err: &pgconn.PgError{
-				Code:    "42501",
-				Message: sensitiveMessage,
-			},
-			want: errStoreInternal,
-		},
-		{
-			name: "network operation",
+			name: "shared availability failure",
 			err: &net.OpError{
 				Op:  "dial",
 				Net: "tcp",
@@ -78,7 +54,15 @@ func TestMapPostgresErrorClassifiesFailures(t *testing.T) {
 			want: errStoreUnavailable,
 		},
 		{
-			name: "unknown error",
+			name: "schema failure",
+			err: &pgconn.PgError{
+				Code:    "42P01",
+				Message: sensitiveMessage,
+			},
+			want: errStoreInternal,
+		},
+		{
+			name: "unknown failure",
 			err:  errors.New(sensitiveMessage),
 			want: errStoreInternal,
 		},
@@ -98,15 +82,35 @@ func TestMapPostgresErrorClassifiesFailures(t *testing.T) {
 }
 
 func TestMapPostgresErrorPreservesCallerContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	canceledCtx, cancelCaller := context.WithCancel(context.Background())
+	cancelCaller()
 
-	err := mapPostgresError(ctx, fmt.Errorf("query failed: %w", context.Canceled))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("mapPostgresError() = %v, want context.Canceled", err)
+	deadlineCtx, cancelDeadline := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancelDeadline()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{name: "caller canceled", ctx: canceledCtx, want: context.Canceled},
+		{name: "caller deadline exceeded", ctx: deadlineCtx, want: context.DeadlineExceeded},
 	}
-	if errors.Is(err, errStoreUnavailable) || errors.Is(err, errStoreInternal) {
-		t.Fatalf("mapPostgresError() = %v, did not want store classification", err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queryCtx, cancelQuery := context.WithTimeoutCause(tt.ctx, time.Minute, errPostgresQueryTimeout)
+			defer cancelQuery()
+			<-queryCtx.Done()
+
+			err := mapPostgresError(queryCtx, fmt.Errorf("query failed: %w", queryCtx.Err()))
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("mapPostgresError() = %v, want %v", err, tt.want)
+			}
+			if errors.Is(err, errStoreUnavailable) || errors.Is(err, errStoreInternal) {
+				t.Fatalf("mapPostgresError() = %v, did not want store classification", err)
+			}
+		})
 	}
 }
 
