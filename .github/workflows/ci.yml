@@ -25,22 +25,6 @@ jobs:
     env:
       DATABASE_URL: postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable
 
-    services:
-      postgres:
-        image: postgres:18.6@sha256:ae6c78831cbc35fa3a4aaf4d763ddacf6183d6004774cc2dc28b3920410d1d1a
-        env:
-          POSTGRES_DB: game_rewards
-          POSTGRES_USER: game_rewards
-          POSTGRES_PASSWORD: game_rewards_dev_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U game_rewards -d game_rewards"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-          --health-start-period 5s
-
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +45,9 @@ jobs:
 
       - name: Run race tests
         run: make test-race
+
+      - name: Start PostgreSQL
+        run: make db-up
 
       - name: Verify full database migration chain
         run: make db-check-full
