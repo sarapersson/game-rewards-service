@@ -1,1 +1,0 @@
-DROP INDEX IF EXISTS outbox_events_aggregate_event_type_unique;

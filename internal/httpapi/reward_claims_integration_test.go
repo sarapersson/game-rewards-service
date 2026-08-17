@@ -126,7 +126,7 @@ WHERE aggregate_type = $1
 	}
 }
 
-func TestRewardClaimsHandlerTreatsCommittedProcessingIdempotencyAsInternal(t *testing.T) {
+func TestRewardClaimsHandlerTreatsCommittedIncompleteIdempotencyAsInternal(t *testing.T) {
 	pool := openHTTPIntegrationPool(t)
 	service, err := rewards.NewService(pool, 2*time.Second)
 	if err != nil {
@@ -161,14 +161,13 @@ func TestRewardClaimsHandlerTreatsCommittedProcessingIdempotencyAsInternal(t *te
 	_, err = pool.Exec(
 		context.Background(),
 		`
-INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
-VALUES ($1, $2, $3, 'processing')`,
-		idempotency.RewardClaimOperation,
+INSERT INTO idempotency_keys (key_hash, request_hash)
+VALUES ($1, $2)`,
 		keyHash[:],
 		requestHash[:],
 	)
 	if err != nil {
-		t.Fatalf("seed committed processing idempotency key: %v", err)
+		t.Fatalf("seed committed incomplete idempotency key: %v", err)
 	}
 
 	rec := performRewardClaimRequest(t, service, idempotencyKey, body)
@@ -208,8 +207,7 @@ func cleanupHTTPIntegrationRewardClaim(
 
 	_, err := pool.Exec(
 		context.Background(),
-		"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-		idempotency.RewardClaimOperation,
+		"DELETE FROM idempotency_keys WHERE key_hash = $1",
 		keyHash,
 	)
 	if err != nil {

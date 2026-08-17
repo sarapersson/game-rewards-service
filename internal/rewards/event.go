@@ -5,7 +5,6 @@ import "time"
 const (
 	outboxAggregateTypeRewardClaim = "reward_claim"
 	outboxEventTypeRewardClaimed   = "RewardClaimed"
-	outboxStatusPending            = "pending"
 
 	rewardClaimedSchemaVersion = 1
 )

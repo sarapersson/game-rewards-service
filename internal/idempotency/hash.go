@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	RewardClaimOperation = "POST /v1/reward-claims"
+	rewardClaimOperation = "POST /v1/reward-claims"
 
 	requestHashVersion = "reward-claim-request/v1"
 	keyHashSize        = sha256.Size
@@ -47,7 +47,7 @@ func HashRewardClaimRequest(req RewardClaimRequest) ([keyHashSize]byte, error) {
 		RewardID   string `json:"reward_id"`
 	}{
 		Version:    requestHashVersion,
-		Operation:  RewardClaimOperation,
+		Operation:  rewardClaimOperation,
 		PlayerID:   req.PlayerID,
 		CampaignID: req.CampaignID,
 		RewardID:   req.RewardID,

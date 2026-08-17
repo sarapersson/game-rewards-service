@@ -2,7 +2,7 @@
 
 A small Go backend service for retry-safe game reward claims.
 
-The service uses PostgreSQL to enforce reward uniqueness, persist deterministic idempotency state, and atomically create transactional outbox events. A separate worker publishes outbox events with leases, retries, and at-least-once delivery semantics.
+The service uses PostgreSQL to enforce reward uniqueness, persist deterministic idempotency responses, and atomically create transactional outbox events. A separate worker publishes outbox events with leases, retries, and at-least-once delivery semantics.
 
 ## What it includes
 
@@ -88,7 +88,7 @@ A successful request returns `201 Created`:
 }
 ```
 
-While its completed idempotency record is retained, retry the same accepted request with the same `Idempotency-Key` to receive the stored response. Replays include:
+Retrying the same accepted request with the same `Idempotency-Key` replays the stored response while that idempotency record is retained. Replays include:
 
 ```text
 Idempotent-Replayed: true
@@ -117,7 +117,7 @@ The three identifiers are trimmed, required, and limited to 128 Unicode characte
 | Known PostgreSQL availability failure          | `503 service_unavailable`                            |
 | Unexpected internal failure                    | `500 internal_error`                                 |
 
-Completed idempotency records become eligible for routine cleanup 24 hours after creation. The service does not run automatic cleanup; once a record is deleted, its key-level replay and reuse history is no longer available.
+Idempotency records with stored responses become eligible for routine cleanup 24 hours after creation. The service does not run automatic cleanup; once a record is deleted, its key-level replay and reuse history is no longer available.
 
 Errors use the stable envelope:
 
@@ -136,9 +136,9 @@ The full client-facing contract is documented in [`openapi.yaml`](openapi.yaml).
 
 ## Architecture and reliability
 
-A new claim, its completed idempotency response, and its `RewardClaimed` outbox event commit in one PostgreSQL transaction. The request path does not call external systems.
+A new claim, its stored idempotency response, and its `RewardClaimed` outbox event commit in one PostgreSQL transaction. The request path does not call external systems.
 
-The worker claims due rows atomically, completes the claim database operation before publishing, then uses lease ownership checks when marking an event published, scheduling a retry, or dead-lettering it. It does not hold a database row lock or transaction while publishing.
+The worker atomically claims due outbox rows and commits the lease update before publishing. Finalization uses lease ownership checks when marking an event published, scheduling a retry, or dead-lettering it. No database row lock or transaction is held while the publisher runs.
 
 Delivery is at-least-once. If publishing succeeds but durable finalization does not, the lease can expire and the event may be delivered again. A real downstream consumer must therefore deduplicate by `event_id`.
 
@@ -176,10 +176,10 @@ Common commands:
 | `make ci`                                         | fast checks plus race tests and `govulncheck`                            |
 | `make test-integration-local`                     | start PostgreSQL, migrate, run integration tests                         |
 | `make docker-build`                               | build the local container image                                          |
-| `make db-check`                                   | latest migration down-one/up check; disposable databases only            |
-| `ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full` | full migration chain down to zero and back up; disposable databases only |
+| `ALLOW_DESTRUCTIVE_DB_RESET=1 make db-reset`     | reset the local Compose database and apply the current schema             |
+| `ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check`     | verify the schema up/down-to-zero/up round-trip on disposable data        |
 
-Both migration checks execute down migrations and must only target disposable local or CI databases. `make db-check` rolls back and reapplies the latest migration. `db-check-full` rolls the complete schema down to version zero and additionally requires explicit opt-in. The opt-in flag does not make a shared database safe to modify or destroy.
+Both destructive database commands require explicit opt-in and are intended only for disposable local data. See [`docs/runbook.md`](docs/runbook.md) for reset and migration procedures.
 
 Run the processes directly instead of Compose:
 
@@ -201,14 +201,12 @@ Runtime configuration is environment-based. Each process loads and validates onl
 
 * [`openapi.yaml`](openapi.yaml) — reward-claim HTTP contract
 * [`docs/architecture.md`](docs/architecture.md) — architecture, consistency, reliability, and key design choices
-* [`docs/runbook.md`](docs/runbook.md) — troubleshooting, retention, and migration rollback guidance
+* [`docs/runbook.md`](docs/runbook.md) — troubleshooting, retention, and migration procedures
 * [`SECURITY.md`](SECURITY.md) — security assumptions, boundaries, and repository security posture
 
-## Scope and limitations
+## Scope
 
-This repository is a compact reference service rather than a complete production platform.
-
-It intentionally does not include authentication or authorization, rate limiting, TLS termination, a real external event broker, automatic retention jobs, dead-letter replay tooling, Prometheus/Grafana deployment, Kubernetes, an ORM, Redis, or a distributed tracing stack.
+This repository is a compact reference service rather than a complete production platform. It focuses on retry-safe reward claims, PostgreSQL-backed consistency, and transactional outbox delivery. Authentication, authorization, deployment networking and secrets, and an external publisher integration are intentionally outside the current scope.
 
 The current publisher is simulated. Delivery is at-least-once, not exactly-once; a real downstream consumer must deduplicate by `event_id`.
 

@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-logs migrate-up migrate-down migrate-status db-check db-check-full
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
 
 BIN_DIR := bin
 API_BIN := $(BIN_DIR)/api
@@ -8,7 +8,8 @@ GOVULNCHECK_VERSION := v1.6.0
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
 MIGRATE_VERSION := v4.19.1
 MIGRATIONS_DIR := migrations
-DATABASE_URL ?= postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable
+override LOCAL_DATABASE_URL := postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable
+DATABASE_URL ?= $(LOCAL_DATABASE_URL)
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -80,6 +81,15 @@ db-up: ## Start local PostgreSQL and wait until it is healthy
 
 db-down: stack-down ## Stop and remove the local Compose stack
 
+db-reset: ## Destructively reset local Compose database data and reapply the schema
+	@if [ "$(ALLOW_DESTRUCTIVE_DB_RESET)" != "1" ]; then \
+		echo "Refusing local database reset. Set ALLOW_DESTRUCTIVE_DB_RESET=1 only for disposable local data."; \
+		exit 1; \
+	fi
+	docker compose down --volumes --remove-orphans
+	$(MAKE) db-up
+	$(MAKE) migrate-up DATABASE_URL="$(LOCAL_DATABASE_URL)"
+
 db-logs: ## Show PostgreSQL logs
 	docker compose logs -f postgres
 
@@ -89,26 +99,15 @@ migrate-up: ## Apply database migrations
 		-database "$(DATABASE_URL)" \
 		up
 
-migrate-down: ## Roll back one database migration
-	@go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION) \
-		-path $(MIGRATIONS_DIR) \
-		-database "$(DATABASE_URL)" \
-		down 1
-
 migrate-status: ## Show database migration version
 	@go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION) \
 		-path $(MIGRATIONS_DIR) \
 		-database "$(DATABASE_URL)" \
 		version
 
-db-check: ## Verify the latest migration can apply, roll back, and re-apply
-	$(MAKE) migrate-up
-	$(MAKE) migrate-down
-	$(MAKE) migrate-up
-
-db-check-full: ## Destructively verify the complete migration chain against a disposable database
+db-check: ## Destructively verify the schema can migrate up, down to zero, and back up
 	@if [ "$(ALLOW_DESTRUCTIVE_DB_CHECK)" != "1" ]; then \
-		echo "Refusing destructive full migration check. Set ALLOW_DESTRUCTIVE_DB_CHECK=1 only for a disposable database."; \
+		echo "Refusing destructive migration check. Set ALLOW_DESTRUCTIVE_DB_CHECK=1 only for a disposable database."; \
 		exit 1; \
 	fi
 	$(MAKE) migrate-up
