@@ -1,4 +1,5 @@
-// Package postgres owns PostgreSQL connection pool setup and health checks.
+// Package postgres owns PostgreSQL connection setup, health checks, and
+// availability classification.
 package postgres
 
 import (
