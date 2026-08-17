@@ -1,8 +1,6 @@
-# Security Notes
+# Security
 
-`game-rewards-service` is a personal reference project, not an operated production service. It does not process real user data and does not provide a security SLA, vulnerability disclosure program, or support commitment.
-
-Anyone deploying or adapting the code is responsible for authentication, authorization, network security, secret management, monitoring, backups, patching, and incident response appropriate to their environment.
+`game-rewards-service` is a reference service rather than an operated production service. This document defines the repository's security boundaries, implemented safeguards, and deployment assumptions.
 
 ## Security model
 
@@ -16,7 +14,7 @@ worker -> publisher boundary
 operator/monitoring -> health and metrics endpoints
 ```
 
-Important assets include reward-claim integrity, idempotency state, outbox event integrity, PostgreSQL credentials and persisted data, operational telemetry, and build/dependency integrity.
+Important assets include reward-claim integrity, idempotency response integrity, outbox event integrity, PostgreSQL credentials and persisted data, operational telemetry, and build/dependency integrity.
 
 The service does **not** implement authentication or authorization, rate limiting, TLS termination, production network policy, or a secret-management platform. It must not be exposed directly to untrusted networks without appropriate controls in the deployment environment.
 
@@ -24,7 +22,7 @@ The service does **not** implement authentication or authorization, rate limitin
 
 * Requests are bounded and strictly decoded: valid UTF-8, a 64 KiB body limit, unknown-field rejection, single-JSON-value enforcement, bounded reward identifiers, and exactly one validated `Idempotency-Key`.
 * Raw idempotency keys are SHA-256 hashed before persistence.
-* PostgreSQL constraints enforce critical invariants, and claim creation, idempotency completion, and outbox creation commit atomically.
+* PostgreSQL constraints enforce critical invariants, and claim creation, storage of the deterministic idempotency response, and outbox creation commit atomically.
 * Known dependency-availability failures are distinguished from unexpected internal, schema, and invariant failures; low-level database and network details are not returned to clients or exposed by worker store failure logs.
 * HTTP, database, publisher, and shutdown operations use explicit timeouts.
 * API shutdown force-closes remaining HTTP connections after the graceful timeout, and reward-claim transaction rollback uses an independent bounded cleanup context.
@@ -61,7 +59,7 @@ Metrics use bounded labels and exclude high-cardinality identifiers such as play
 
 Production-like environments should use least-privilege database roles, transport encryption, managed secrets, backups, restore testing, and credential rotation appropriate to the deployment.
 
-`ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full` rolls the complete schema down to version zero and must only target disposable local or CI databases. The opt-in flag prevents accidental invocation; it does not prove that the configured database is safe to destroy.
+`ALLOW_DESTRUCTIVE_DB_RESET=1 make db-reset` removes the local Compose database volume and reapplies the current schema baseline. `ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check` rolls the schema down to version zero and back up. Both commands must only target disposable data. The opt-in flags prevent accidental invocation; they do not prove that a database is safe to destroy.
 
 The service does not perform automatic idempotency or outbox cleanup. Routine retention must never remove `pending` or `processing` outbox events.
 
@@ -70,18 +68,3 @@ Migration rollback preconditions and safe retention procedures are documented in
 ## Future integration security
 
 A future external publisher integration must define its own authentication, transport security, credential management, timeout and retry policy, and payload/data-classification requirements.
-
-## Deliberate exclusions
-
-The repository does not currently provide:
-
-* authentication or authorization;
-* rate limiting or abuse prevention;
-* TLS termination or production network policy;
-* a real external broker or publisher;
-* automatic retention cleanup;
-* dead-letter replay tooling;
-* a Prometheus or Grafana deployment;
-* a supported production release or operational response commitment.
-
-These capabilities should be introduced only when concrete deployment or product requirements justify them.

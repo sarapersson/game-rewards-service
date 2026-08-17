@@ -15,12 +15,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
-const defaultIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
+const (
+	defaultIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
+	outboxStatusPending           = "pending"
+)
 
 func TestCreateClaimPersistenceAllowsSameRewardInDifferentCampaigns(t *testing.T) {
 	pool := openIntegrationPool(t)
@@ -171,27 +175,20 @@ func TestCreateClaimPersistenceCompletesIdempotencyKey(t *testing.T) {
 	}
 
 	var (
-		state          string
 		responseStatus int
 		rewardClaimID  string
-		completedAt    time.Time
 	)
 
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT state, response_status, reward_claim_id::text, completed_at
+SELECT response_status, reward_claim_id::text
 FROM idempotency_keys
-WHERE operation = $1 AND key_hash = $2`,
-		idempotency.RewardClaimOperation,
+WHERE key_hash = $1`,
 		cmd.KeyHash[:],
-	).Scan(&state, &responseStatus, &rewardClaimID, &completedAt)
+	).Scan(&responseStatus, &rewardClaimID)
 	if err != nil {
 		t.Fatalf("query idempotency key: %v", err)
-	}
-
-	if state != idempotencyStateCompleted {
-		t.Fatalf("state = %q, want %q", state, idempotencyStateCompleted)
 	}
 
 	if responseStatus != createClaimStatusCreated {
@@ -200,10 +197,6 @@ WHERE operation = $1 AND key_hash = $2`,
 
 	if rewardClaimID != cmd.Claim.ID {
 		t.Fatalf("reward_claim_id = %q, want %q", rewardClaimID, cmd.Claim.ID)
-	}
-
-	if completedAt.IsZero() {
-		t.Fatal("completed_at is zero")
 	}
 
 	var claimCount int
@@ -226,7 +219,7 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
-func TestCreateClaimPersistenceReplaysCompletedResponse(t *testing.T) {
+func TestCreateClaimPersistenceReplaysStoredResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
@@ -368,7 +361,6 @@ func TestCreateClaimPersistenceStoresDuplicateRewardResponse(t *testing.T) {
 	}
 
 	var (
-		state          string
 		responseStatus int
 		responseBody   []byte
 	)
@@ -376,18 +368,13 @@ func TestCreateClaimPersistenceStoresDuplicateRewardResponse(t *testing.T) {
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT state, response_status, response_body
+SELECT response_status, response_body
 FROM idempotency_keys
-WHERE operation = $1 AND key_hash = $2`,
-		idempotency.RewardClaimOperation,
+WHERE key_hash = $1`,
 		duplicate.KeyHash[:],
-	).Scan(&state, &responseStatus, &responseBody)
+	).Scan(&responseStatus, &responseBody)
 	if err != nil {
 		t.Fatalf("query duplicate idempotency key: %v", err)
-	}
-
-	if state != idempotencyStateCompleted {
-		t.Fatalf("duplicate state = %q, want %q", state, idempotencyStateCompleted)
 	}
 
 	if responseStatus != createClaimStatusConflict {
@@ -600,8 +587,8 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 
 	var (
-		completedCount         int
-		processingCount        int
+		totalCount             int
+		incompleteCount        int
 		createdResponseCount   int
 		conflictResponseCount  int
 		linkedRewardClaimCount int
@@ -610,36 +597,33 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 		context.Background(),
 		`
 SELECT
-    count(*) FILTER (WHERE state = $3),
-    count(*) FILTER (WHERE state = $4),
-    count(*) FILTER (WHERE response_status = $5),
-    count(*) FILTER (WHERE response_status = $6),
+    count(*),
+    count(*) FILTER (WHERE response_status IS NULL),
+    count(*) FILTER (WHERE response_status = $2),
+    count(*) FILTER (WHERE response_status = $3),
     count(*) FILTER (WHERE reward_claim_id IS NOT NULL)
 FROM idempotency_keys
-WHERE operation = $1 AND request_hash = $2`,
-		idempotency.RewardClaimOperation,
+WHERE request_hash = $1`,
 		cmds[0].RequestHash[:],
-		idempotencyStateCompleted,
-		idempotencyStateProcessing,
 		createClaimStatusCreated,
 		createClaimStatusConflict,
 	).Scan(
-		&completedCount,
-		&processingCount,
+		&totalCount,
+		&incompleteCount,
 		&createdResponseCount,
 		&conflictResponseCount,
 		&linkedRewardClaimCount,
 	)
 	if err != nil {
-		t.Fatalf("query concurrent idempotency state: %v", err)
+		t.Fatalf("query concurrent idempotency records: %v", err)
 	}
 
-	if completedCount != attempts {
-		t.Fatalf("completed idempotency keys = %d, want %d", completedCount, attempts)
+	if totalCount != attempts {
+		t.Fatalf("idempotency keys = %d, want %d", totalCount, attempts)
 	}
 
-	if processingCount != 0 {
-		t.Fatalf("processing idempotency keys = %d, want 0", processingCount)
+	if incompleteCount != 0 {
+		t.Fatalf("incomplete idempotency keys = %d, want 0", incompleteCount)
 	}
 
 	if createdResponseCount != 1 {
@@ -767,7 +751,6 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 
 	var (
-		state          string
 		responseStatus int
 		storedBody     []byte
 		rewardClaimID  string
@@ -775,18 +758,13 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT state, response_status, response_body, reward_claim_id::text
+SELECT response_status, response_body, reward_claim_id::text
 FROM idempotency_keys
-WHERE operation = $1 AND key_hash = $2`,
-		idempotency.RewardClaimOperation,
+WHERE key_hash = $1`,
 		cmd.KeyHash[:],
-	).Scan(&state, &responseStatus, &storedBody, &rewardClaimID)
+	).Scan(&responseStatus, &storedBody, &rewardClaimID)
 	if err != nil {
 		t.Fatalf("query idempotency key: %v", err)
-	}
-
-	if state != idempotencyStateCompleted {
-		t.Fatalf("idempotency state = %q, want %q", state, idempotencyStateCompleted)
 	}
 
 	if responseStatus != createClaimStatusCreated {
@@ -812,7 +790,7 @@ WHERE operation = $1 AND key_hash = $2`,
 	}
 }
 
-func TestCreateClaimPersistenceTreatsCommittedProcessingKeyAsInternal(t *testing.T) {
+func TestCreateClaimPersistenceTreatsCommittedIncompleteKeyAsInternal(t *testing.T) {
 	tests := []struct {
 		name              string
 		storedHashDiffers bool
@@ -842,15 +820,13 @@ func TestCreateClaimPersistenceTreatsCommittedProcessingKeyAsInternal(t *testing
 			_, err := pool.Exec(
 				context.Background(),
 				`
-INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
-VALUES ($1, $2, $3, $4)`,
-				idempotency.RewardClaimOperation,
+INSERT INTO idempotency_keys (key_hash, request_hash)
+VALUES ($1, $2)`,
 				cmd.KeyHash[:],
 				storedRequestHash,
-				idempotencyStateProcessing,
 			)
 			if err != nil {
-				t.Fatalf("seed committed processing idempotency key: %v", err)
+				t.Fatalf("seed committed incomplete idempotency key: %v", err)
 			}
 
 			_, err = service.createClaim(context.Background(), cmd)
@@ -880,6 +856,85 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	}
 }
 
+func TestIdempotencyKeysResponseShapeConstraintRejectsInvalidRows(t *testing.T) {
+	pool := openIntegrationPool(t)
+
+	tests := []struct {
+		name      string
+		status    any
+		body      any
+		linkClaim bool
+	}{
+		{name: "incomplete with body", body: []byte(`{}`)},
+		{name: "incomplete with claim link", linkClaim: true},
+		{name: "created without body", status: createClaimStatusCreated, linkClaim: true},
+		{name: "created with empty body", status: createClaimStatusCreated, body: []byte{}, linkClaim: true},
+		{name: "created without claim link", status: createClaimStatusCreated, body: []byte(`{}`)},
+		{name: "conflict with claim link", status: createClaimStatusConflict, body: []byte(`{}`), linkClaim: true},
+		{name: "unsupported status", status: 500, body: []byte(`{}`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testName := integrationTestName(t)
+			playerID := "player-" + testName
+			campaignID := "campaign-" + testName
+			rewardID := "reward-" + testName
+			cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+
+			cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+
+			var rewardClaimID any
+			if tt.linkClaim {
+				_, err := pool.Exec(
+					context.Background(),
+					`INSERT INTO reward_claims (id, player_id, campaign_id, reward_id) VALUES ($1, $2, $3, $4)`,
+					cmd.Claim.ID,
+					playerID,
+					campaignID,
+					rewardID,
+				)
+				if err != nil {
+					t.Fatalf("seed reward claim: %v", err)
+				}
+				rewardClaimID = cmd.Claim.ID
+			}
+
+			_, err := pool.Exec(
+				context.Background(),
+				`
+INSERT INTO idempotency_keys (
+    key_hash,
+    request_hash,
+    response_status,
+    response_body,
+    reward_claim_id
+)
+VALUES ($1, $2, $3, $4, $5)`,
+				cmd.KeyHash[:],
+				cmd.RequestHash[:],
+				tt.status,
+				tt.body,
+				rewardClaimID,
+			)
+			if err == nil {
+				t.Fatal("insert invalid idempotency response shape succeeded")
+			}
+
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) {
+				t.Fatalf("insert invalid idempotency response shape error = %T %v, want PostgreSQL error", err, err)
+			}
+			if pgErr.Code != "23514" {
+				t.Fatalf("PostgreSQL error code = %q, want check_violation (23514)", pgErr.Code)
+			}
+			if pgErr.ConstraintName != "idempotency_keys_response_shape_chk" {
+				t.Fatalf("constraint = %q, want idempotency_keys_response_shape_chk", pgErr.ConstraintName)
+			}
+		})
+	}
+}
+
 func TestCreateClaimPersistenceRejectsInvalidStoredReplay(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 2*time.Second)
@@ -892,40 +947,23 @@ func TestCreateClaimPersistenceRejectsInvalidStoredReplay(t *testing.T) {
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	storedClaim := claim{
-		ID:         cmd.Claim.ID,
-		PlayerID:   cmd.Claim.PlayerID,
-		CampaignID: cmd.Claim.CampaignID,
-		RewardID:   cmd.Claim.RewardID,
-		CreatedAt:  time.Now().UTC(),
-	}
-	storedBody, err := marshalCreatedClaimResponse(storedClaim)
-	if err != nil {
-		t.Fatalf("marshalCreatedClaimResponse returned error: %v", err)
-	}
-
-	_, err = pool.Exec(
+	_, err := pool.Exec(
 		context.Background(),
 		`
 INSERT INTO idempotency_keys (
-    operation,
     key_hash,
     request_hash,
-    state,
     response_status,
-    response_body,
-    completed_at
+    response_body
 )
-VALUES ($1, $2, $3, $4, $5, $6, now())`,
-		idempotency.RewardClaimOperation,
+VALUES ($1, $2, $3, $4)`,
 		cmd.KeyHash[:],
 		cmd.RequestHash[:],
-		idempotencyStateCompleted,
-		createClaimStatusCreated,
-		storedBody,
+		createClaimStatusConflict,
+		[]byte(`{"error":{"code":"idempotency_key_reused","message":"Reward has already been claimed"}}`),
 	)
 	if err != nil {
-		t.Fatalf("seed invalid completed idempotency key: %v", err)
+		t.Fatalf("seed invalid stored idempotency response: %v", err)
 	}
 
 	_, err = service.createClaim(context.Background(), cmd)
@@ -1135,8 +1173,7 @@ WHERE id = $1`,
 		`
 SELECT count(*)
 FROM idempotency_keys
-WHERE operation = $1 AND key_hash = $2`,
-		idempotency.RewardClaimOperation,
+WHERE key_hash = $1`,
 		cmd.KeyHash[:],
 	).Scan(&idempotencyCount)
 	if err != nil {
@@ -1471,8 +1508,7 @@ func cleanupIntegrationCreateClaimData(
 		for _, cmd := range cmds {
 			_, err := pool.Exec(
 				context.Background(),
-				"DELETE FROM idempotency_keys WHERE operation = $1 AND key_hash = $2",
-				idempotency.RewardClaimOperation,
+				"DELETE FROM idempotency_keys WHERE key_hash = $1",
 				cmd.KeyHash[:],
 			)
 			if err != nil {

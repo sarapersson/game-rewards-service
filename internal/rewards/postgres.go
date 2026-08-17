@@ -10,13 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 	"github.com/sarapersson/game-rewards-service/internal/postgres"
-)
-
-const (
-	idempotencyStateProcessing = "processing"
-	idempotencyStateCompleted  = "completed"
 )
 
 var errPostgresQueryTimeout = errors.New("postgres reward claim query timeout")
@@ -92,17 +86,15 @@ func (s *Service) queryContext(ctx context.Context) (context.Context, context.Ca
 
 func tryReserveIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd createClaimParams) (bool, error) {
 	const query = `
-INSERT INTO idempotency_keys (operation, key_hash, request_hash, state)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (operation, key_hash) DO NOTHING`
+INSERT INTO idempotency_keys (key_hash, request_hash)
+VALUES ($1, $2)
+ON CONFLICT (key_hash) DO NOTHING`
 
 	tag, err := tx.Exec(
 		ctx,
 		query,
-		idempotency.RewardClaimOperation,
 		cmd.KeyHash[:],
 		cmd.RequestHash[:],
-		idempotencyStateProcessing,
 	)
 	if err != nil {
 		return false, mapPostgresError(ctx, err)
@@ -113,21 +105,19 @@ ON CONFLICT (operation, key_hash) DO NOTHING`
 
 func replayIdempotentClaim(ctx context.Context, tx pgx.Tx, cmd createClaimParams) (CreateClaimResult, error) {
 	const query = `
-SELECT request_hash, state, response_status, response_body, reward_claim_id::text
+SELECT request_hash, response_status, response_body, reward_claim_id::text
 FROM idempotency_keys
-WHERE operation = $1 AND key_hash = $2`
+WHERE key_hash = $1`
 
 	var (
 		requestHash    []byte
-		state          string
 		responseStatus sql.NullInt64
 		responseBody   []byte
 		rewardClaimID  sql.NullString
 	)
 
-	err := tx.QueryRow(ctx, query, idempotency.RewardClaimOperation, cmd.KeyHash[:]).Scan(
+	err := tx.QueryRow(ctx, query, cmd.KeyHash[:]).Scan(
 		&requestHash,
-		&state,
 		&responseStatus,
 		&responseBody,
 		&rewardClaimID,
@@ -136,16 +126,12 @@ WHERE operation = $1 AND key_hash = $2`
 		return CreateClaimResult{}, mapPostgresError(ctx, err)
 	}
 
-	if state != idempotencyStateCompleted {
-		return CreateClaimResult{}, fmt.Errorf("unexpected committed idempotency state %q: %w", state, ErrInternal)
+	if !responseStatus.Valid || len(responseBody) == 0 {
+		return CreateClaimResult{}, fmt.Errorf("committed idempotency key missing stored response: %w", ErrInternal)
 	}
 
 	if !bytes.Equal(requestHash, cmd.RequestHash[:]) {
 		return CreateClaimResult{}, ErrIdempotencyKeyReused
-	}
-
-	if !responseStatus.Valid || len(responseBody) == 0 {
-		return CreateClaimResult{}, fmt.Errorf("completed idempotency key missing stored response: %w", ErrInternal)
 	}
 
 	result := CreateClaimResult{
@@ -194,8 +180,8 @@ func insertRewardClaimedOutboxEvent(ctx context.Context, tx pgx.Tx, claim claim)
 	}
 
 	const query = `
-INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6)`
+INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload)
+VALUES ($1, $2, $3, $4, $5::jsonb)`
 
 	_, err = tx.Exec(
 		ctx,
@@ -205,7 +191,6 @@ VALUES ($1, $2, $3, $4, $5::jsonb, $6)`
 		claim.ID,
 		outboxEventTypeRewardClaimed,
 		string(payload),
-		outboxStatusPending,
 	)
 	if err != nil {
 		return mapPostgresError(ctx, err)
@@ -240,28 +225,23 @@ func completeIdempotencyKey(
 ) error {
 	const query = `
 UPDATE idempotency_keys
-SET state = $3,
-    response_status = $4,
-    response_body = $5,
-    reward_claim_id = NULLIF($6, '')::uuid,
-    completed_at = now(),
-    updated_at = now()
-WHERE operation = $1
-  AND key_hash = $2
-  AND request_hash = $7
-  AND state = $8`
+SET response_status = $2,
+    response_body = $3,
+    reward_claim_id = NULLIF($4, '')::uuid
+WHERE key_hash = $1
+  AND request_hash = $5
+  AND response_status IS NULL
+  AND response_body IS NULL
+  AND reward_claim_id IS NULL`
 
 	tag, err := tx.Exec(
 		ctx,
 		query,
-		idempotency.RewardClaimOperation,
 		cmd.KeyHash[:],
-		idempotencyStateCompleted,
 		statusCode,
 		responseBody,
 		claimID,
 		cmd.RequestHash[:],
-		idempotencyStateProcessing,
 	)
 	if err != nil {
 		return mapPostgresError(ctx, err)
@@ -276,8 +256,8 @@ WHERE operation = $1
 
 func tryInsertClaimForIdempotentCreate(ctx context.Context, tx pgx.Tx, candidate claimToCreate) (claim, bool, error) {
 	const query = `
-INSERT INTO reward_claims (id, player_id, campaign_id, reward_id, status)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO reward_claims (id, player_id, campaign_id, reward_id)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (player_id, campaign_id, reward_id) DO NOTHING
 RETURNING id::text, player_id, campaign_id, reward_id, created_at`
 
@@ -290,7 +270,6 @@ RETURNING id::text, player_id, campaign_id, reward_id, created_at`
 		candidate.PlayerID,
 		candidate.CampaignID,
 		candidate.RewardID,
-		claimStatusClaimed,
 	).Scan(
 		&created.ID,
 		&created.PlayerID,

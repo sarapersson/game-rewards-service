@@ -1,6 +1,6 @@
 # Runbook
 
-This runbook covers the operational procedures that are specific to this repository. It is not a substitute for deployment-specific backup, access-control, networking, or incident-response procedures.
+This runbook covers operational procedures specific to this repository. Backup, access-control, networking, and incident-response procedures remain deployment-specific.
 
 For local inspection, open PostgreSQL with:
 
@@ -123,20 +123,20 @@ First distinguish the cases:
 
 * `reward_already_claimed`: the business uniqueness constraint rejected the same player/campaign/reward;
 * `idempotency_key_reused`: the same key was used for a different accepted request;
-* `Idempotent-Replayed: true`: the response was loaded from a completed idempotency record;
-* encountering a committed `processing` idempotency row yields `500 internal_error` and indicates an invariant failure.
+* `Idempotent-Replayed: true`: the response was loaded from a retained idempotency record with a stored response;
+* encountering a committed idempotency row without a stored response yields `500 internal_error` and indicates an invariant failure.
 
 Inspect the business identity:
 
 ```sql
-SELECT id, player_id, campaign_id, reward_id, status, created_at
+SELECT id, player_id, campaign_id, reward_id, created_at
 FROM reward_claims
 WHERE player_id = 'player-123'
   AND campaign_id = 'winter-2026'
   AND reward_id = 'daily-login';
 ```
 
-Raw idempotency keys are not stored. The lookup key is `(operation, key_hash)`, where `key_hash` is SHA-256 of the idempotency key after leading and trailing whitespace has been removed.
+Raw idempotency keys are not stored. The lookup key is the SHA-256 `key_hash` of the idempotency key after leading and trailing whitespace has been removed.
 
 If an operator is explicitly given the original key, enter the normalized value without leading or trailing whitespace and compute the hash locally without placing the raw value in shell history:
 
@@ -150,75 +150,68 @@ unset NORMALIZED_IDEMPOTENCY_KEY
 Use the resulting hex digest to inspect the specific record:
 
 ```sql
-SELECT operation,
-       state,
-       response_status,
+SELECT response_status,
        reward_claim_id,
-       created_at,
-       updated_at,
-       completed_at,
-       expires_at
+       created_at
 FROM idempotency_keys
-WHERE operation = 'POST /v1/reward-claims'
-  AND key_hash = decode('<sha256-hex>', 'hex');
+WHERE key_hash = decode('<sha256-hex>', 'hex');
 ```
 
 For a broader recent-state view without exposing raw keys:
 
 ```sql
-SELECT operation, encode(key_hash, 'hex') AS key_hash,
-       state, response_status, reward_claim_id,
-       created_at, updated_at, completed_at, expires_at
+SELECT encode(key_hash, 'hex') AS key_hash,
+       response_status, reward_claim_id,
+       created_at
 FROM idempotency_keys
-ORDER BY updated_at DESC
+ORDER BY created_at DESC
 LIMIT 100;
 ```
 
 Do not paste raw idempotency keys into logs, tickets, dashboards, or shared incident notes.
 
-A committed `processing` idempotency row is an invariant violation: successful reward-claim transactions complete the row before commit. Investigate how it was created before changing or deleting it, and do not treat it as a normal retry or routine retention case.
+A committed idempotency row with a null response is an invariant violation: successful reward-claim transactions establish the stored response before commit. Investigate how the row was created before changing or deleting it, and do not treat it as a normal retry or routine retention case.
 
 ## Retention and cleanup
 
 The service does not run automatic cleanup jobs.
 
-### Completed idempotency records
+### Idempotency records with stored responses
 
-Only completed records whose `expires_at` has passed are candidates for routine cleanup.
+Only records with a stored response older than 24 hours are candidates for routine cleanup. The cutoff is derived from `created_at`; there is no separate persisted expiry timestamp.
 
-`expires_at` is a cleanup boundary only; request handling does not treat a retained record as expired, so it continues to replay after `expires_at` until it is deleted. Deleting one removes its stored deterministic replay history. A later request can reserve the same key again and is evaluated against current business state rather than replaying the deleted response.
+Request handling does not apply an expiry check, so a retained record continues to replay after the 24-hour cleanup threshold until it is deleted. Deleting one removes its stored deterministic replay history. A later request can reserve the same key again and is evaluated against current business state rather than replaying the deleted response.
 
 Inspect first:
 
 ```sql
 SELECT count(*)
 FROM idempotency_keys
-WHERE state = 'completed'
-  AND expires_at < now();
+WHERE response_status IS NOT NULL
+  AND created_at < now() - interval '24 hours';
 ```
 
 Delete in small batches:
 
 ```sql
 WITH batch AS (
-    SELECT operation, key_hash
+    SELECT key_hash
     FROM idempotency_keys
-    WHERE state = 'completed'
-      AND expires_at < now()
-    ORDER BY expires_at
+    WHERE response_status IS NOT NULL
+      AND created_at < now() - interval '24 hours'
+    ORDER BY created_at
     LIMIT 500
 )
 DELETE FROM idempotency_keys AS i
 USING batch
-WHERE i.operation = batch.operation
-  AND i.key_hash = batch.key_hash;
+WHERE i.key_hash = batch.key_hash;
 ```
 
-Never include `processing` rows in routine cleanup.
+Never include incomplete idempotency rows in routine cleanup.
 
 ### Published outbox events
 
-Choose a retention cutoff appropriate to the deployment; v1 does not define a fixed retention period.
+Choose a retention cutoff appropriate to the deployment; the repository does not define a fixed retention period.
 
 After replacing the example cutoff, inspect before deleting:
 
@@ -253,74 +246,22 @@ Before automating high-volume cleanup, review query cost and indexes for the cho
 
 ## Migration verification
 
-Latest-migration rollback check:
+The repository currently uses a single development schema baseline. If a disposable local Compose database has migration history that no longer matches the current baseline, rebuild it rather than forcing or hand-editing the migration version:
 
 ```bash
-make db-check
+ALLOW_DESTRUCTIVE_DB_RESET=1 make db-reset
 ```
 
-Full migration-chain rollback check:
+This stops the Compose stack, removes its database volume, starts a fresh PostgreSQL instance, and applies the current schema. It destroys all data in that local Compose database.
+
+Verify the baseline's complete round trip only against a disposable database:
 
 ```bash
-ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check-full
+ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check
 ```
 
-Both commands execute down migrations and must only target disposable local or CI databases. `make db-check` rolls back and reapplies the latest migration. The full check rolls the complete schema down to version zero and additionally requires explicit opt-in. The opt-in flag does not make a shared database safe to modify or destroy.
+The check migrates up, down to version zero, and back up. The explicit opt-in does not make a shared or production-like database safe to modify or destroy.
 
-Historical migrations are immutable. If a rollback precondition is not satisfied, do not edit or bypass the old migration; resolve the data/operational condition first.
+Once a migration has been distributed or applied outside disposable development environments, treat it as immutable. Future schema changes should add migrations rather than rewriting deployed history.
 
-A schema rollback must be coordinated with application rollback. Stop or quiesce affected processes and ensure the API/worker version you intend to run is compatible with the target schema before applying a down migration.
-
-### Rollback of migration `000002`
-
-`000002_add_campaign_id_to_reward_claims.down.sql` restores the older uniqueness model `(player_id, reward_id)` and removes `campaign_id`.
-
-Before rollback, stop/quiesce writers and check for conflicts:
-
-```sql
-SELECT player_id, reward_id, count(*)
-FROM reward_claims
-GROUP BY player_id, reward_id
-HAVING count(*) > 1;
-```
-
-Any returned row blocks a safe rollback because multiple campaign-scoped claims would violate the older uniqueness constraint. Define an explicit data-resolution plan; do not bypass the migration guard.
-
-The down migration also converts `status = 'claimed'` back to `accepted` before restoring the older status constraint.
-
-### Rollback of migration `000003`
-
-`000003_store_idempotency_response_body_as_bytes.down.sql` converts completed `response_body` values from `bytea` back to `jsonb`.
-
-Before rollback:
-
-1. stop/quiesce writers;
-2. take the deployment-appropriate backup;
-3. verify completed bodies are valid UTF-8 JSON objects;
-4. perform the rollback in a controlled maintenance window.
-
-A useful validation query is:
-
-```sql
-SELECT operation, encode(key_hash, 'hex') AS key_hash
-FROM idempotency_keys
-WHERE state = 'completed'
-  AND jsonb_typeof(convert_from(response_body, 'UTF8')::jsonb) <> 'object';
-```
-
-The query must complete successfully and return no rows. Invalid UTF-8 or invalid JSON causes the query to fail; valid JSON values that are not objects are returned as rows. Either result blocks rollback until the data is resolved.
-
-### Rollback of migration `000005`
-
-Stop worker processes before rolling back `000005_add_outbox_worker_leases`.
-
-Inspect state before and after:
-
-```sql
-SELECT status, count(*)
-FROM outbox_events
-GROUP BY status
-ORDER BY status;
-```
-
-The down migration intentionally converts `processing` rows back to recoverable `pending` rows and removes lease/dead-letter timestamp columns. Confirm the application/worker versions are compatible with the target schema before restarting processes.
+After the baseline is deployed or shared persistent data exists, schema rollback must be handled as an explicit migration/application rollback decision rather than by rewriting the baseline. Stop or quiesce affected processes and ensure the application version is compatible with the target schema.

@@ -49,8 +49,8 @@ jobs:
       - name: Start PostgreSQL
         run: make db-up
 
-      - name: Verify full database migration chain
-        run: make db-check-full
+      - name: Verify database migration round trip
+        run: make db-check
         env:
           ALLOW_DESTRUCTIVE_DB_CHECK: "1"
 
