@@ -66,6 +66,10 @@ Raw idempotency keys are not persisted; PostgreSQL stores only their SHA-256 has
 
 A new claim writes one `RewardClaimed` outbox event in the same transaction as the claim and idempotency response.
 
+`RewardClaimed` schema v1 carries the event envelope and the claim identity plus `claimed_at`. It does not carry a separate claim status because claim existence and the `RewardClaimed` event type already express that state.
+
+Reward claim and event timestamps are serialized as RFC 3339 UTC values; PostgreSQL `timestamptz` remains the persistent source of the underlying instant.
+
 The outbox remains aggregate-agnostic: `aggregate_id` is intentionally not a foreign key to `reward_claims`, keeping the event store decoupled from one domain table.
 
 The worker then processes due events:
@@ -106,7 +110,7 @@ The outbox worker uses the same fail-closed principle with process semantics app
 
 Caller/shutdown cancellation is preserved as context cancellation and is not counted as an outbox operation failure.
 
-Low-level PostgreSQL and network details are not returned to clients or exposed through worker failure logs.
+Low-level PostgreSQL and network details are not returned to clients or exposed through `outbox_worker_iteration_failed`; worker startup failures may still log their underlying error for diagnosis.
 
 ## Observability model
 

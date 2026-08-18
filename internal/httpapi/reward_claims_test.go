@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
@@ -45,15 +43,6 @@ func (s fakeRewardClaimService) CreateClaim(_ context.Context, _ rewards.CreateC
 	}
 
 	return s.result, nil
-}
-
-type testCreateRewardClaimResponse struct {
-	ClaimID    string `json:"claim_id"`
-	PlayerID   string `json:"player_id"`
-	CampaignID string `json:"campaign_id"`
-	RewardID   string `json:"reward_id"`
-	Status     string `json:"status"`
-	ClaimedAt  string `json:"claimed_at"`
 }
 
 func TestRewardClaimsHandlerRejectsUnsupportedMethod(t *testing.T) {
@@ -386,19 +375,12 @@ func TestRewardClaimsHandlerRejectsLargeBodyAfterValidJSON(t *testing.T) {
 }
 
 func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
-	createdAt := time.Date(2026, 7, 6, 12, 34, 56, 123456000, time.UTC)
+	responseBody := `{"claim_id":"claim-123","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","claimed_at":"2026-07-06T12:34:56.123456Z"}`
 
 	service := &recordingRewardClaimService{
 		result: rewards.CreateClaimResult{
-			StatusCode: http.StatusCreated,
-			ResponseBody: []byte(`{
-				"claim_id":"claim-123",
-				"player_id":"player-123",
-				"campaign_id":"campaign-123",
-				"reward_id":"reward-123",
-				"status":"claimed",
-				"claimed_at":"` + createdAt.Format(time.RFC3339Nano) + `"
-			}`),
+			StatusCode:   http.StatusCreated,
+			ResponseBody: []byte(responseBody),
 		},
 	}
 
@@ -437,33 +419,8 @@ func TestRewardClaimsHandlerCreatesClaim(t *testing.T) {
 		t.Fatalf("service idempotency key = %q, want %q", service.cmd.IdempotencyKey, "claim-key-123")
 	}
 
-	var body testCreateRewardClaimResponse
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-
-	if body.ClaimID != "claim-123" {
-		t.Fatalf("response claim_id = %q, want %q", body.ClaimID, "claim-123")
-	}
-
-	if body.PlayerID != "player-123" {
-		t.Fatalf("response player_id = %q, want %q", body.PlayerID, "player-123")
-	}
-
-	if body.CampaignID != "campaign-123" {
-		t.Fatalf("response campaign_id = %q, want %q", body.CampaignID, "campaign-123")
-	}
-
-	if body.RewardID != "reward-123" {
-		t.Fatalf("response reward_id = %q, want %q", body.RewardID, "reward-123")
-	}
-
-	if body.Status != "claimed" {
-		t.Fatalf("response status = %q, want claimed", body.Status)
-	}
-
-	if body.ClaimedAt != createdAt.Format(time.RFC3339Nano) {
-		t.Fatalf("response claimed_at = %q, want %q", body.ClaimedAt, createdAt.Format(time.RFC3339Nano))
+	if rec.Body.String() != responseBody {
+		t.Fatalf("response body = %s, want %s", rec.Body.String(), responseBody)
 	}
 }
 

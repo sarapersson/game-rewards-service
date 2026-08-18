@@ -9,7 +9,7 @@ import (
 const responseTestClaimID = "11111111-1111-4111-8111-111111111111"
 
 func TestMarshalCreatedClaimResponseGolden(t *testing.T) {
-	claimedAt := time.Date(2026, 8, 16, 13, 45, 12, 123456000, time.UTC)
+	claimedAt := time.Date(2026, 8, 16, 15, 45, 12, 123456000, time.FixedZone("UTC+2", 2*60*60))
 
 	body, err := marshalCreatedClaimResponse(claim{
 		ID:         responseTestClaimID,
@@ -22,7 +22,7 @@ func TestMarshalCreatedClaimResponseGolden(t *testing.T) {
 		t.Fatalf("marshalCreatedClaimResponse returned error: %v", err)
 	}
 
-	want := []byte(`{"claim_id":"11111111-1111-4111-8111-111111111111","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","status":"claimed","claimed_at":"2026-08-16T13:45:12.123456Z"}`)
+	want := []byte(`{"claim_id":"11111111-1111-4111-8111-111111111111","player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123","claimed_at":"2026-08-16T13:45:12.123456Z"}`)
 	if !bytes.Equal(body, want) {
 		t.Fatalf("created response = %s, want %s", body, want)
 	}

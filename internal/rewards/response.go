@@ -16,7 +16,6 @@ type createClaimResponse struct {
 	PlayerID   string `json:"player_id"`
 	CampaignID string `json:"campaign_id"`
 	RewardID   string `json:"reward_id"`
-	Status     string `json:"status"`
 	ClaimedAt  string `json:"claimed_at"`
 }
 
@@ -35,7 +34,6 @@ func marshalCreatedClaimResponse(claim claim) ([]byte, error) {
 		PlayerID:   claim.PlayerID,
 		CampaignID: claim.CampaignID,
 		RewardID:   claim.RewardID,
-		Status:     claimStatusClaimed,
 		ClaimedAt:  claim.CreatedAt.UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {

@@ -83,7 +83,6 @@ A successful request returns `201 Created`:
   "player_id": "player-123",
   "campaign_id": "winter-2026",
   "reward_id": "daily-login",
-  "status": "claimed",
   "claimed_at": "2026-07-07T12:34:56.123456Z"
 }
 ```

@@ -65,7 +65,6 @@ paths:
                 player_id: player-123
                 campaign_id: winter-2026
                 reward_id: daily-login
-                status: claimed
                 claimed_at: '2026-07-07T12:34:56.123456Z'
 
         '400':
@@ -229,7 +228,6 @@ components:
         - player_id
         - campaign_id
         - reward_id
-        - status
         - claimed_at
       properties:
         claim_id:
@@ -241,12 +239,10 @@ components:
           type: string
         reward_id:
           type: string
-        status:
-          type: string
-          const: claimed
         claimed_at:
           type: string
           format: date-time
+          description: Serialized as an RFC 3339 UTC timestamp.
 
     ErrorResponse:
       type: object
