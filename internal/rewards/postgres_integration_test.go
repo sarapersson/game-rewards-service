@@ -899,11 +899,12 @@ func TestCreateClaimPersistenceCreatesRewardClaimedOutboxEvent(t *testing.T) {
 		eventType     string
 		status        string
 		payload       []byte
+		claimedAt     time.Time
 	)
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT o.id, o.aggregate_type, o.aggregate_id, o.event_type, o.status, o.payload
+SELECT o.id, o.aggregate_type, o.aggregate_id, o.event_type, o.status, o.payload, r.created_at
 FROM outbox_events AS o
 JOIN reward_claims AS r ON r.id = o.aggregate_id
 WHERE o.aggregate_type = $1
@@ -916,7 +917,7 @@ WHERE o.aggregate_type = $1
 		playerID,
 		campaignID,
 		rewardID,
-	).Scan(&eventID, &aggregateType, &aggregateID, &eventType, &status, &payload)
+	).Scan(&eventID, &aggregateType, &aggregateID, &eventType, &status, &payload, &claimedAt)
 	if err != nil {
 		t.Fatalf("query outbox event: %v", err)
 	}
@@ -934,40 +935,29 @@ WHERE o.aggregate_type = $1
 		t.Fatalf("status = %q, want %q", status, outboxStatusPending)
 	}
 
-	var event rewardClaimedEvent
-	if err := json.Unmarshal(payload, &event); err != nil {
-		t.Fatalf("unmarshal outbox payload: %v; payload = %s", err, payload)
-	}
-	if event.SchemaVersion != rewardClaimedSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", event.SchemaVersion, rewardClaimedSchemaVersion)
-	}
-	if event.EventID != eventID {
-		t.Fatalf("payload event ID = %q, want %q", event.EventID, eventID)
-	}
-	if event.EventType != outboxEventTypeRewardClaimed {
-		t.Fatalf("payload event type = %q, want %q", event.EventType, outboxEventTypeRewardClaimed)
-	}
-	if event.Claim.ClaimID != aggregateID {
-		t.Fatalf("payload claim ID = %q, want aggregate ID %q", event.Claim.ClaimID, aggregateID)
-	}
-	if event.Claim.PlayerID != playerID {
-		t.Fatalf("payload player ID = %q, want %q", event.Claim.PlayerID, playerID)
-	}
-	if event.Claim.CampaignID != campaignID {
-		t.Fatalf("payload campaign ID = %q, want %q", event.Claim.CampaignID, campaignID)
-	}
-	if event.Claim.RewardID != rewardID {
-		t.Fatalf("payload reward ID = %q, want %q", event.Claim.RewardID, rewardID)
-	}
-	if event.Claim.Status != claimStatusClaimed {
-		t.Fatalf("payload claim status = %q, want %q", event.Claim.Status, claimStatusClaimed)
-	}
-	if event.Claim.ClaimedAt.IsZero() {
-		t.Fatal("payload claimed_at is zero")
-	}
-	if event.OccurredAt.IsZero() {
-		t.Fatal("payload occurred_at is zero")
-	}
+	expectedPayload := []byte(fmt.Sprintf(`{
+		"schema_version": 1,
+		"event_id": %q,
+		"event_type": "RewardClaimed",
+		"occurred_at": %q,
+		"claim": {
+			"claim_id": %q,
+			"player_id": %q,
+			"campaign_id": %q,
+			"reward_id": %q,
+			"claimed_at": %q
+		}
+	}`,
+		eventID,
+		claimedAt.UTC().Format(time.RFC3339Nano),
+		aggregateID,
+		playerID,
+		campaignID,
+		rewardID,
+		claimedAt.UTC().Format(time.RFC3339Nano),
+	))
+
+	assertJSONSemanticallyEqual(t, payload, expectedPayload)
 }
 
 func TestCreateClaimPersistenceRollsBackWhenOutboxInsertFails(t *testing.T) {

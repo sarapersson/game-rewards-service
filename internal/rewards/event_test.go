@@ -1,52 +1,59 @@
 package rewards
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
 
-func TestNewRewardClaimedEvent(t *testing.T) {
-	claimedAt := time.Date(2026, 7, 8, 12, 34, 56, 0, time.UTC)
+func TestRewardClaimedEventJSONContract(t *testing.T) {
+	claimedAt := time.Date(2026, 7, 8, 14, 34, 56, 123456000, time.FixedZone("UTC+2", 2*60*60))
 
-	claim := claim{
+	event := newRewardClaimedEvent("event_123", claim{
 		ID:         "claim_123",
 		PlayerID:   "player_123",
 		CampaignID: "winter_2026",
 		RewardID:   "coins_1000",
 		CreatedAt:  claimedAt,
+	})
+
+	actual, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal RewardClaimed event: %v", err)
 	}
 
-	event := newRewardClaimedEvent("event_123", claim)
+	expected := []byte(`{
+		"schema_version": 1,
+		"event_id": "event_123",
+		"event_type": "RewardClaimed",
+		"occurred_at": "2026-07-08T12:34:56.123456Z",
+		"claim": {
+			"claim_id": "claim_123",
+			"player_id": "player_123",
+			"campaign_id": "winter_2026",
+			"reward_id": "coins_1000",
+			"claimed_at": "2026-07-08T12:34:56.123456Z"
+		}
+	}`)
 
-	if event.SchemaVersion != rewardClaimedSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", event.SchemaVersion, rewardClaimedSchemaVersion)
-	}
-	if event.EventID != "event_123" {
-		t.Fatalf("event ID = %q, want event_123", event.EventID)
-	}
-	if event.EventType != outboxEventTypeRewardClaimed {
-		t.Fatalf("event type = %q, want %q", event.EventType, outboxEventTypeRewardClaimed)
-	}
-	if !event.OccurredAt.Equal(claimedAt) {
-		t.Fatalf("occurred at = %s, want %s", event.OccurredAt, claimedAt)
+	assertJSONSemanticallyEqual(t, actual, expected)
+}
+
+func assertJSONSemanticallyEqual(t *testing.T, actual, expected []byte) {
+	t.Helper()
+
+	var actualValue any
+	if err := json.Unmarshal(actual, &actualValue); err != nil {
+		t.Fatalf("unmarshal actual JSON: %v; JSON = %s", err, actual)
 	}
 
-	if event.Claim.ClaimID != claim.ID {
-		t.Fatalf("claim ID = %q, want %q", event.Claim.ClaimID, claim.ID)
+	var expectedValue any
+	if err := json.Unmarshal(expected, &expectedValue); err != nil {
+		t.Fatalf("unmarshal expected JSON: %v; JSON = %s", err, expected)
 	}
-	if event.Claim.PlayerID != claim.PlayerID {
-		t.Fatalf("player ID = %q, want %q", event.Claim.PlayerID, claim.PlayerID)
-	}
-	if event.Claim.CampaignID != claim.CampaignID {
-		t.Fatalf("campaign ID = %q, want %q", event.Claim.CampaignID, claim.CampaignID)
-	}
-	if event.Claim.RewardID != claim.RewardID {
-		t.Fatalf("reward ID = %q, want %q", event.Claim.RewardID, claim.RewardID)
-	}
-	if event.Claim.Status != claimStatusClaimed {
-		t.Fatalf("claim status = %q, want %q", event.Claim.Status, claimStatusClaimed)
-	}
-	if !event.Claim.ClaimedAt.Equal(claimedAt) {
-		t.Fatalf("claimed at = %s, want %s", event.Claim.ClaimedAt, claimedAt)
+
+	if !reflect.DeepEqual(actualValue, expectedValue) {
+		t.Fatalf("JSON mismatch:\nactual:   %s\nexpected: %s", actual, expected)
 	}
 }

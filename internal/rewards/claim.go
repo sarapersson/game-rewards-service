@@ -12,8 +12,6 @@ const (
 
 	maxIdempotencyKeyLength = 255
 
-	claimStatusClaimed = "claimed"
-
 	createClaimStatusCreated  = 201
 	createClaimStatusConflict = 409
 )

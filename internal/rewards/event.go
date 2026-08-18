@@ -22,7 +22,6 @@ type rewardClaimedEventClaim struct {
 	PlayerID   string    `json:"player_id"`
 	CampaignID string    `json:"campaign_id"`
 	RewardID   string    `json:"reward_id"`
-	Status     string    `json:"status"`
 	ClaimedAt  time.Time `json:"claimed_at"`
 }
 
@@ -31,14 +30,13 @@ func newRewardClaimedEvent(eventID string, claim claim) rewardClaimedEvent {
 		SchemaVersion: rewardClaimedSchemaVersion,
 		EventID:       eventID,
 		EventType:     outboxEventTypeRewardClaimed,
-		OccurredAt:    claim.CreatedAt,
+		OccurredAt:    claim.CreatedAt.UTC(),
 		Claim: rewardClaimedEventClaim{
 			ClaimID:    claim.ID,
 			PlayerID:   claim.PlayerID,
 			CampaignID: claim.CampaignID,
 			RewardID:   claim.RewardID,
-			Status:     claimStatusClaimed,
-			ClaimedAt:  claim.CreatedAt,
+			ClaimedAt:  claim.CreatedAt.UTC(),
 		},
 	}
 }
