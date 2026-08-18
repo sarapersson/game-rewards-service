@@ -142,7 +142,7 @@ The worker atomically claims due outbox rows and commits the lease update before
 
 Delivery is at-least-once. If publishing succeeds but durable finalization does not, the lease can expire and the event may be delivered again. A real downstream consumer must therefore deduplicate by `event_id`.
 
-Worker timing configuration is validated at startup. In particular, the processing lease must outlive the publisher timeout plus the final database operation so ownership remains valid through normal finalization.
+Worker timing configuration is validated at startup. In particular, the processing lease must be greater than the publisher timeout plus two database query-timeout budgets: one for claiming and one for finalization.
 
 See [`docs/architecture.md`](docs/architecture.md) for the system flow, reliability guarantees, and key design choices.
 

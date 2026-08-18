@@ -53,9 +53,9 @@ CREATE TABLE outbox_events (
     event_type text NOT NULL,
     payload jsonb NOT NULL,
     status text NOT NULL DEFAULT 'pending',
-    attempts integer NOT NULL DEFAULT 0,
+    failed_attempts integer NOT NULL DEFAULT 0,
     available_at timestamptz NOT NULL DEFAULT now(),
-    last_error text,
+    last_failure_reason text,
     locked_by text,
     locked_until timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -66,8 +66,21 @@ CREATE TABLE outbox_events (
     CONSTRAINT outbox_events_event_type_length_chk CHECK (length(event_type) BETWEEN 1 AND 128),
     CONSTRAINT outbox_events_payload_object_chk CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT outbox_events_status_chk CHECK (status IN ('pending', 'processing', 'published', 'dead_letter')),
-    CONSTRAINT outbox_events_attempts_chk CHECK (attempts >= 0),
-    CONSTRAINT outbox_events_last_error_length_chk CHECK (last_error IS NULL OR length(last_error) <= 2000),
+    CONSTRAINT outbox_events_failed_attempts_chk CHECK (failed_attempts >= 0),
+    CONSTRAINT outbox_events_last_failure_reason_chk CHECK (
+        last_failure_reason IS NULL
+        OR last_failure_reason IN ('failed', 'timeout', 'canceled')
+    ),
+    CONSTRAINT outbox_events_failure_state_chk CHECK (
+        CASE
+            WHEN status = 'dead_letter' THEN
+                failed_attempts > 0
+                AND last_failure_reason IS NOT NULL
+            ELSE
+                (failed_attempts = 0 AND last_failure_reason IS NULL)
+                OR (failed_attempts > 0 AND last_failure_reason IS NOT NULL)
+        END
+    ),
     CONSTRAINT outbox_events_locked_by_length_chk CHECK (locked_by IS NULL OR length(locked_by) BETWEEN 1 AND 128),
     CONSTRAINT outbox_events_updated_at_chk CHECK (updated_at >= created_at),
     CONSTRAINT outbox_events_published_status_chk CHECK (

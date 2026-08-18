@@ -73,7 +73,7 @@ The worker then processes due events:
 ```text
 pending -> processing -> published
                    \-> pending       retry scheduled
-                   \-> dead_letter   max attempts reached
+                   \-> dead_letter   max failures reached
 ```
 
 Claiming uses PostgreSQL `FOR UPDATE SKIP LOCKED` and a processing lease (`locked_by`, `locked_until`). The claim/update statement completes before publishing starts, so the worker does **not** hold a row lock or database transaction while calling the publisher.
@@ -88,9 +88,9 @@ Delivery is **at-least-once**.
 
 If publishing succeeds but the worker dies before persisting `published`, the lease eventually expires and the event can be delivered again. A real downstream consumer must therefore deduplicate by `event_id`.
 
-Retries use bounded exponential backoff and PostgreSQL-calculated retry timestamps. After the configured maximum attempts, the event moves to `dead_letter`.
+Retries use bounded exponential backoff and PostgreSQL-calculated retry timestamps. `failed_attempts` records durably persisted publisher failures; after a publish failure reaches the configured maximum failures, the event moves to `dead_letter`. `last_failure_reason` retains the most recently persisted publisher failure classification, including after eventual publication, and is `NULL` exactly when `failed_attempts` is zero.
 
-Shutdown cancellation is not persisted as a publisher failure: attempts are not incremented and no retry/dead-letter transition is written. The leased event becomes recoverable after lease expiry.
+Shutdown cancellation is not persisted as a publisher failure: `failed_attempts` is not incremented and no retry/dead-letter transition is written. The leased event becomes recoverable after lease expiry.
 
 ## Failure classification
 
@@ -100,6 +100,7 @@ The outbox worker uses the same fail-closed principle with process semantics app
 
 * recognized PostgreSQL availability failures, including the worker store's own query timeout, are recoverable iteration failures and are retried after the poll interval;
 * publisher failures remain event-level outcomes and follow the persisted retry/backoff/dead-letter policy;
+* persisted publisher failure reasons use the bounded `failed`, `timeout`, and `canceled` vocabulary;
 * lease loss during finalization is an expected fencing outcome, recorded separately and left for normal lease recovery/reclaim;
 * schema, permission, invariant, protocol, programming, and otherwise unexpected store failures are fatal to the worker loop so the process can terminate rather than report an active but permanently ineffective worker.
 

@@ -29,8 +29,8 @@ func TestWorkerRunIterationPublishesClaimedEvent(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
 	if len(publisher.published) != 1 {
@@ -70,8 +70,8 @@ func TestWorkerRunIterationClaimsOnlyOneEvent(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
 	if len(publisher.published) != 1 {
@@ -91,7 +91,7 @@ func TestWorkerRunIterationClaimsOnlyOneEvent(t *testing.T) {
 	}
 }
 
-func TestWorkerRunIterationReturnsZeroWhenNoEventIsDue(t *testing.T) {
+func TestWorkerRunIterationReturnsFalseWhenNoEventIsDue(t *testing.T) {
 	store := &fakeStore{}
 	publisher := &fakePublisher{}
 	worker := newTestWorker(t, store, publisher)
@@ -101,8 +101,8 @@ func TestWorkerRunIterationReturnsZeroWhenNoEventIsDue(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 0 {
-		t.Fatalf("expected 0 processed events, got %d", processed)
+	if processed {
+		t.Fatal("expected no event to be processed")
 	}
 
 	if len(publisher.published) != 0 {
@@ -121,8 +121,8 @@ func TestWorkerRunIterationPropagatesClaimError(t *testing.T) {
 		t.Fatalf("expected claim error, got %v", err)
 	}
 
-	if processed != 0 {
-		t.Fatalf("expected 0 processed events, got %d", processed)
+	if processed {
+		t.Fatal("expected no event to be processed")
 	}
 
 	if len(publisher.published) != 0 {
@@ -131,13 +131,10 @@ func TestWorkerRunIterationPropagatesClaimError(t *testing.T) {
 }
 
 func TestWorkerRunIterationSchedulesRetryOnPublishFailure(t *testing.T) {
-	nextAvailableAt := time.Date(2026, time.July, 11, 12, 0, 2, 0, time.UTC)
-
 	store := &fakeStore{
 		claimed: []Event{
 			testEvent("event-1", 1),
 		},
-		retryAvailableAt: nextAvailableAt,
 	}
 
 	publisher := &fakePublisher{
@@ -151,8 +148,8 @@ func TestWorkerRunIterationSchedulesRetryOnPublishFailure(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
 	if store.retryEventID != "event-1" {
@@ -163,8 +160,8 @@ func TestWorkerRunIterationSchedulesRetryOnPublishFailure(t *testing.T) {
 		t.Fatalf("expected retry delay 2s, got %s", store.retryDelay)
 	}
 
-	if store.lastError != publishFailureFailed {
-		t.Fatalf("expected failure reason %q, got %q", publishFailureFailed, store.lastError)
+	if store.publishOutcome != PublishOutcomeFailed {
+		t.Fatalf("expected failure reason %q, got %q", PublishOutcomeFailed, store.publishOutcome)
 	}
 
 	if store.publishedEventID != "" {
@@ -197,8 +194,8 @@ func TestWorkerRunIterationPropagatesRetrySchedulingError(t *testing.T) {
 		t.Fatalf("expected retry scheduling error, got %v", err)
 	}
 
-	if processed != 0 {
-		t.Fatalf("expected 0 processed events, got %d", processed)
+	if processed {
+		t.Fatal("expected no event to be processed")
 	}
 
 	if store.retryEventID != "event-1" {
@@ -219,7 +216,6 @@ func TestWorkerRunIterationSchedulesRetryOnPublishTimeout(t *testing.T) {
 		claimed: []Event{
 			testEvent("event-1", 0),
 		},
-		retryAvailableAt: time.Date(2026, time.July, 11, 12, 0, 1, 0, time.UTC),
 	}
 
 	publisher := &blockingPublisher{}
@@ -231,8 +227,8 @@ func TestWorkerRunIterationSchedulesRetryOnPublishTimeout(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
 	if store.retryEventID != "event-1" {
@@ -243,8 +239,8 @@ func TestWorkerRunIterationSchedulesRetryOnPublishTimeout(t *testing.T) {
 		t.Fatalf("expected retry delay 1s, got %s", store.retryDelay)
 	}
 
-	if store.lastError != publishFailureTimeout {
-		t.Fatalf("expected failure reason %q, got %q", publishFailureTimeout, store.lastError)
+	if store.publishOutcome != PublishOutcomeTimeout {
+		t.Fatalf("expected failure reason %q, got %q", PublishOutcomeTimeout, store.publishOutcome)
 	}
 }
 
@@ -253,7 +249,6 @@ func TestWorkerRunIterationClassifiesPublisherCancellation(t *testing.T) {
 		claimed: []Event{
 			testEvent("event-1", 0),
 		},
-		retryAvailableAt: time.Date(2026, time.July, 11, 12, 0, 1, 0, time.UTC),
 	}
 
 	publisher := &fakePublisher{err: context.Canceled}
@@ -264,16 +259,16 @@ func TestWorkerRunIterationClassifiesPublisherCancellation(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
-	if store.lastError != publishFailureCanceled {
-		t.Fatalf("expected failure reason %q, got %q", publishFailureCanceled, store.lastError)
+	if store.publishOutcome != PublishOutcomeCanceled {
+		t.Fatalf("expected failure reason %q, got %q", PublishOutcomeCanceled, store.publishOutcome)
 	}
 }
 
-func TestWorkerRunIterationDeadLettersAfterMaxAttempts(t *testing.T) {
+func TestWorkerRunIterationDeadLettersAfterMaxFailures(t *testing.T) {
 	store := &fakeStore{
 		claimed: []Event{
 			testEvent("event-1", 4),
@@ -291,16 +286,16 @@ func TestWorkerRunIterationDeadLettersAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
 	if store.deadLetterEventID != "event-1" {
 		t.Fatalf("expected event-1 to be dead-lettered, got %q", store.deadLetterEventID)
 	}
 
-	if store.lastError != publishFailureFailed {
-		t.Fatalf("expected failure reason %q, got %q", publishFailureFailed, store.lastError)
+	if store.publishOutcome != PublishOutcomeFailed {
+		t.Fatalf("expected failure reason %q, got %q", PublishOutcomeFailed, store.publishOutcome)
 	}
 
 	if store.retryEventID != "" {
@@ -333,8 +328,8 @@ func TestWorkerRunIterationPropagatesDeadLetterError(t *testing.T) {
 		t.Fatalf("expected dead-letter error, got %v", err)
 	}
 
-	if processed != 0 {
-		t.Fatalf("expected 0 processed events, got %d", processed)
+	if processed {
+		t.Fatal("expected no event to be processed")
 	}
 
 	if store.deadLetterEventID != "event-1" {
@@ -350,12 +345,11 @@ func TestWorkerRunIterationPropagatesDeadLetterError(t *testing.T) {
 	}
 }
 
-func TestWorkerRunIterationRetriesBeforeMaxAttempts(t *testing.T) {
+func TestWorkerRunIterationRetriesBeforeMaxFailures(t *testing.T) {
 	store := &fakeStore{
 		claimed: []Event{
 			testEvent("event-1", 3),
 		},
-		retryAvailableAt: time.Date(2026, time.July, 11, 12, 0, 8, 0, time.UTC),
 	}
 
 	publisher := &fakePublisher{
@@ -369,8 +363,8 @@ func TestWorkerRunIterationRetriesBeforeMaxAttempts(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
 	if store.retryEventID != "event-1" {
@@ -425,8 +419,8 @@ func TestWorkerRunIterationDoesNotRetryOnShutdownCancellation(t *testing.T) {
 			t.Fatalf("expected context.Canceled, got %v", result.err)
 		}
 
-		if result.processed != 0 {
-			t.Fatalf("expected 0 processed events, got %d", result.processed)
+		if result.processed {
+			t.Fatal("expected no event to be processed")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runOnce did not stop after cancellation")
@@ -468,8 +462,8 @@ func TestWorkerRunIterationTreatsCompletionLeaseLossAsHandled(t *testing.T) {
 		t.Fatalf("runOnce error = %v, want nil", err)
 	}
 
-	if processed != 0 {
-		t.Fatalf("processed = %d, want 0 after lease loss", processed)
+	if processed {
+		t.Fatal("processed = true, want false after lease loss")
 	}
 
 	if len(publisher.published) != 1 {
@@ -517,8 +511,8 @@ func TestWorkerRunIterationTreatsRetryAndDeadLetterLeaseLossAsHandled(t *testing
 			if err != nil {
 				t.Fatalf("runOnce error = %v, want nil", err)
 			}
-			if processed != 0 {
-				t.Fatalf("processed = %d, want 0 after lease loss", processed)
+			if processed {
+				t.Fatal("processed = true, want false after lease loss")
 			}
 			if len(observer.leaseLosses) != 1 ||
 				observer.leaseLosses[0] != tt.operation {
@@ -540,7 +534,6 @@ func TestWorkerDoesNotExposeRawPublisherError(t *testing.T) {
 		claimed: []Event{
 			testEvent("event-1", 0),
 		},
-		retryAvailableAt: time.Date(2026, time.July, 11, 12, 0, 1, 0, time.UTC),
 	}
 
 	publisher := &fakePublisher{
@@ -555,12 +548,12 @@ func TestWorkerDoesNotExposeRawPublisherError(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if processed != 1 {
-		t.Fatalf("expected 1 processed event, got %d", processed)
+	if !processed {
+		t.Fatal("expected event to be processed")
 	}
 
-	if store.lastError != publishFailureFailed {
-		t.Fatalf("expected persisted failure reason %q, got %q", publishFailureFailed, store.lastError)
+	if store.publishOutcome != PublishOutcomeFailed {
+		t.Fatalf("expected persisted failure reason %q, got %q", PublishOutcomeFailed, store.publishOutcome)
 	}
 
 	if strings.Contains(logs.String(), secret) {
@@ -835,8 +828,8 @@ func TestWorkerRunIterationDoesNotCountShutdownDuringFinalizationAsOperationErro
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runOnce error = %v, want context.Canceled", err)
 	}
-	if processed != 0 {
-		t.Fatalf("processed = %d, want 0", processed)
+	if processed {
+		t.Fatal("processed = true, want false")
 	}
 	if len(observer.operationErrors) != 0 {
 		t.Fatalf("operation errors = %#v, want none during shutdown", observer.operationErrors)
@@ -856,7 +849,7 @@ func TestNewWorkerRejectsInvalidConfig(t *testing.T) {
 		PollInterval:   time.Millisecond,
 		LockTTL:        30 * time.Second,
 		PublishTimeout: 5 * time.Second,
-		MaxAttempts:    5,
+		MaxFailures:    5,
 		BaseBackoff:    time.Second,
 		MaxBackoff:     time.Minute,
 	}
@@ -941,12 +934,12 @@ func TestNewWorkerRejectsInvalidConfig(t *testing.T) {
 			}),
 		},
 		{
-			name:      "non-positive max attempts",
+			name:      "non-positive max failures",
 			store:     validStore,
 			publisher: validPublisher,
 			logger:    validLogger,
 			config: mutateWorkerConfig(validConfig, func(cfg *WorkerConfig) {
-				cfg.MaxAttempts = 0
+				cfg.MaxFailures = 0
 			}),
 		},
 		{
@@ -994,7 +987,7 @@ func newTestWorkerWithLogger(
 			PollInterval:   time.Millisecond,
 			LockTTL:        30 * time.Second,
 			PublishTimeout: 5 * time.Second,
-			MaxAttempts:    5,
+			MaxFailures:    5,
 			BaseBackoff:    time.Second,
 			MaxBackoff:     time.Minute,
 		},
@@ -1015,19 +1008,18 @@ func mutateWorkerConfig(cfg WorkerConfig, mutate func(*WorkerConfig)) WorkerConf
 	return cfg
 }
 
-func testEvent(id string, attempts int) Event {
+func testEvent(id string, failedAttempts int) Event {
 	return Event{
-		ID:            id,
-		AggregateType: "reward_claim",
-		AggregateID:   "claim-1",
-		EventType:     "RewardClaimed",
-		Status:        StatusProcessing,
-		Attempts:      attempts,
+		ID:             id,
+		AggregateType:  "reward_claim",
+		AggregateID:    "claim-1",
+		EventType:      "RewardClaimed",
+		FailedAttempts: failedAttempts,
 	}
 }
 
 type runOnceResult struct {
-	processed int
+	processed bool
 	err       error
 }
 
@@ -1043,8 +1035,7 @@ type fakeStore struct {
 	retryEventID      string
 	deadLetterEventID string
 	retryDelay        time.Duration
-	retryAvailableAt  time.Time
-	lastError         string
+	publishOutcome    PublishOutcome
 
 	claimCalls      atomic.Int32
 	claimSignal     chan struct{}
@@ -1097,27 +1088,23 @@ func (s *fakeStore) ScheduleRetry(
 	_ string,
 	eventID string,
 	retryDelay time.Duration,
-	lastError string,
-) (time.Time, error) {
+	outcome PublishOutcome,
+) error {
 	s.retryEventID = eventID
 	s.retryDelay = retryDelay
-	s.lastError = lastError
+	s.publishOutcome = outcome
 
-	if s.scheduleRetryErr != nil {
-		return time.Time{}, s.scheduleRetryErr
-	}
-
-	return s.retryAvailableAt, nil
+	return s.scheduleRetryErr
 }
 
 func (s *fakeStore) MarkDeadLetter(
 	_ context.Context,
 	_ string,
 	eventID string,
-	lastError string,
+	outcome PublishOutcome,
 ) error {
 	s.deadLetterEventID = eventID
-	s.lastError = lastError
+	s.publishOutcome = outcome
 
 	if s.markDeadLetterErr != nil {
 		return s.markDeadLetterErr
@@ -1194,8 +1181,8 @@ func TestWorkerObserverRecordsSuccessfulPublishAndFinalization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runOnce error: %v", err)
 	}
-	if processed != 1 {
-		t.Fatalf("processed = %d, want 1", processed)
+	if !processed {
+		t.Fatal("processed = false, want true")
 	}
 	if len(observer.claims) != 1 ||
 		observer.claims[0] != ClaimOutcomeClaimed {
@@ -1230,8 +1217,8 @@ func TestWorkerObserverRecordsLeaseLossSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runOnce error = %v, want nil", err)
 	}
-	if processed != 0 {
-		t.Fatalf("processed = %d, want 0 after lease loss", processed)
+	if processed {
+		t.Fatal("processed = true, want false after lease loss")
 	}
 	if len(observer.leaseLosses) != 1 ||
 		observer.leaseLosses[0] != OperationMarkPublished {
@@ -1265,7 +1252,7 @@ func newTestWorkerWithObserver(
 			PollInterval:   time.Millisecond,
 			LockTTL:        30 * time.Second,
 			PublishTimeout: 5 * time.Second,
-			MaxAttempts:    5,
+			MaxFailures:    5,
 			BaseBackoff:    time.Second,
 			MaxBackoff:     time.Minute,
 			Observer:       observer,
@@ -1323,21 +1310,21 @@ func (o *recordingWorkerObserver) ObservePublished(
 
 func (o *recordingWorkerObserver) ObserveRetry(
 	eventType string,
-	failureReason string,
+	outcome PublishOutcome,
 ) {
 	o.retries = append(
 		o.retries,
-		eventType+":"+failureReason,
+		eventType+":"+string(outcome),
 	)
 }
 
 func (o *recordingWorkerObserver) ObserveDeadLetter(
 	eventType string,
-	failureReason string,
+	outcome PublishOutcome,
 ) {
 	o.deadLetters = append(
 		o.deadLetters,
-		eventType+":"+failureReason,
+		eventType+":"+string(outcome),
 	)
 }
 
@@ -1368,9 +1355,9 @@ func TestWorkerObserverRecordsIdleAndClaimError(t *testing.T) {
 		)
 
 		processed, err := worker.runOnce(context.Background())
-		if err != nil || processed != 0 {
+		if err != nil || processed {
 			t.Fatalf(
-				"runOnce = (%d, %v), want (0, nil)",
+				"runOnce = (%t, %v), want (false, nil)",
 				processed,
 				err,
 			)
@@ -1426,16 +1413,6 @@ func TestWorkerObserverRecordsRetryAndDeadLetterAfterSuccessfulTransitions(
 			claimed: []Event{
 				testEvent("event-1", 0),
 			},
-			retryAvailableAt: time.Date(
-				2026,
-				time.July,
-				16,
-				12,
-				0,
-				0,
-				0,
-				time.UTC,
-			),
 		}
 		observer := &recordingWorkerObserver{}
 		worker := newTestWorkerWithObserver(
@@ -1448,9 +1425,9 @@ func TestWorkerObserverRecordsRetryAndDeadLetterAfterSuccessfulTransitions(
 		)
 
 		processed, err := worker.runOnce(context.Background())
-		if err != nil || processed != 1 {
+		if err != nil || !processed {
 			t.Fatalf(
-				"runOnce = (%d, %v), want (1, nil)",
+				"runOnce = (%t, %v), want (true, nil)",
 				processed,
 				err,
 			)
@@ -1464,7 +1441,7 @@ func TestWorkerObserverRecordsRetryAndDeadLetterAfterSuccessfulTransitions(
 		}
 		if len(observer.retries) != 1 ||
 			observer.retries[0] !=
-				"RewardClaimed:"+publishFailureFailed {
+				"RewardClaimed:"+string(PublishOutcomeFailed) {
 			t.Fatalf("retries = %#v", observer.retries)
 		}
 	})
@@ -1486,16 +1463,16 @@ func TestWorkerObserverRecordsRetryAndDeadLetterAfterSuccessfulTransitions(
 		)
 
 		processed, err := worker.runOnce(context.Background())
-		if err != nil || processed != 1 {
+		if err != nil || !processed {
 			t.Fatalf(
-				"runOnce = (%d, %v), want (1, nil)",
+				"runOnce = (%t, %v), want (true, nil)",
 				processed,
 				err,
 			)
 		}
 		if len(observer.deadLetters) != 1 ||
 			observer.deadLetters[0] !=
-				"RewardClaimed:"+publishFailureFailed {
+				"RewardClaimed:"+string(PublishOutcomeFailed) {
 			t.Fatalf(
 				"dead letters = %#v",
 				observer.deadLetters,

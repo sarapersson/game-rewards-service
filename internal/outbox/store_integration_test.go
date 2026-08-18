@@ -12,12 +12,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
 	defaultIntegrationDatabaseURL = "postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable"
 	integrationQueryTimeout       = 2 * time.Second
+
+	integrationStatusPending    = "pending"
+	integrationStatusProcessing = "processing"
+	integrationStatusPublished  = "published"
+	integrationStatusDeadLetter = "dead_letter"
 )
 
 func TestPostgresStoreClaimNextClaimsPendingEvent(t *testing.T) {
@@ -38,7 +44,7 @@ func TestPostgresStoreClaimNextClaimsPendingEvent(t *testing.T) {
 		pool,
 		eventID,
 		aggregateID,
-		StatusPending,
+		integrationStatusPending,
 		0,
 		time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC),
 	)
@@ -56,8 +62,8 @@ func TestPostgresStoreClaimNextClaimsPendingEvent(t *testing.T) {
 		t.Fatalf("event id = %q, want %q", event.ID, eventID)
 	}
 
-	if event.Status != StatusProcessing {
-		t.Fatalf("event status = %q, want %q", event.Status, StatusProcessing)
+	if event.FailedAttempts != 0 {
+		t.Fatalf("event failed attempts = %d, want 0", event.FailedAttempts)
 	}
 
 	var (
@@ -81,8 +87,8 @@ WHERE id = $1`,
 		t.Fatalf("query claimed event: %v", err)
 	}
 
-	if status != StatusProcessing {
-		t.Fatalf("database status = %q, want %q", status, StatusProcessing)
+	if status != integrationStatusProcessing {
+		t.Fatalf("database status = %q, want %q", status, integrationStatusProcessing)
 	}
 
 	if lockedBy != workerID {
@@ -112,7 +118,7 @@ func TestPostgresStoreClaimNextSkipsFuturePendingEvent(t *testing.T) {
 		pool,
 		eventID,
 		aggregateID,
-		StatusPending,
+		integrationStatusPending,
 		0,
 		integrationDatabaseNow(t, pool).Add(time.Hour),
 	)
@@ -144,8 +150,8 @@ WHERE id = $1`,
 		t.Fatalf("query future event: %v", err)
 	}
 
-	if status != StatusPending {
-		t.Fatalf("status = %q, want %q", status, StatusPending)
+	if status != integrationStatusPending {
+		t.Fatalf("status = %q, want %q", status, integrationStatusPending)
 	}
 
 	if lockedBy != nil {
@@ -177,6 +183,7 @@ func TestPostgresStoreClaimNextReclaimsExpiredProcessingEvent(t *testing.T) {
 		eventID,
 		aggregateID,
 		oldWorkerID,
+		1,
 		integrationDatabaseNow(t, pool).Add(-time.Minute),
 	)
 
@@ -191,6 +198,9 @@ func TestPostgresStoreClaimNextReclaimsExpiredProcessingEvent(t *testing.T) {
 
 	if event.ID != eventID {
 		t.Fatalf("event id = %q, want %q", event.ID, eventID)
+	}
+	if event.FailedAttempts != 1 {
+		t.Fatalf("event failed attempts = %d, want 1", event.FailedAttempts)
 	}
 
 	var (
@@ -214,8 +224,8 @@ WHERE id = $1`,
 		t.Fatalf("query reclaimed event: %v", err)
 	}
 
-	if status != StatusProcessing {
-		t.Fatalf("status = %q, want %q", status, StatusProcessing)
+	if status != integrationStatusProcessing {
+		t.Fatalf("status = %q, want %q", status, integrationStatusProcessing)
 	}
 
 	if lockedBy != newWorkerID {
@@ -247,6 +257,7 @@ func TestPostgresStoreClaimNextSkipsActiveProcessingEvent(t *testing.T) {
 		eventID,
 		aggregateID,
 		ownerWorkerID,
+		0,
 		integrationDatabaseNow(t, pool).Add(time.Hour),
 	)
 
@@ -276,8 +287,8 @@ WHERE id = $1`,
 		t.Fatalf("query active processing event: %v", err)
 	}
 
-	if status != StatusProcessing {
-		t.Fatalf("status = %q, want %q", status, StatusProcessing)
+	if status != integrationStatusProcessing {
+		t.Fatalf("status = %q, want %q", status, integrationStatusProcessing)
 	}
 
 	if lockedBy != ownerWorkerID {
@@ -307,7 +318,7 @@ func TestPostgresStoreClaimNextDoesNotDoubleClaimConcurrently(t *testing.T) {
 		firstPool,
 		eventID,
 		aggregateID,
-		StatusPending,
+		integrationStatusPending,
 		0,
 		time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC),
 	)
@@ -417,6 +428,7 @@ func TestPostgresStoreMarkPublished(t *testing.T) {
 		eventID,
 		aggregateID,
 		workerID,
+		1,
 		integrationDatabaseNow(t, pool).Add(time.Hour),
 	)
 
@@ -425,11 +437,12 @@ func TestPostgresStoreMarkPublished(t *testing.T) {
 	}
 
 	var (
-		status      string
-		lockedBy    *string
-		lockedUntil *time.Time
-		publishedAt *time.Time
-		lastError   *string
+		status            string
+		failedAttempts    int
+		lockedBy          *string
+		lockedUntil       *time.Time
+		publishedAt       *time.Time
+		lastFailureReason *string
 	)
 
 	err := pool.QueryRow(
@@ -437,20 +450,25 @@ func TestPostgresStoreMarkPublished(t *testing.T) {
 		`
 SELECT
     status,
+    failed_attempts,
     locked_by,
     locked_until,
     published_at,
-    last_error
+    last_failure_reason
 FROM outbox_events
 WHERE id = $1`,
 		eventID,
-	).Scan(&status, &lockedBy, &lockedUntil, &publishedAt, &lastError)
+	).Scan(&status, &failedAttempts, &lockedBy, &lockedUntil, &publishedAt, &lastFailureReason)
 	if err != nil {
 		t.Fatalf("query published event: %v", err)
 	}
 
-	if status != StatusPublished {
-		t.Fatalf("status = %q, want %q", status, StatusPublished)
+	if status != integrationStatusPublished {
+		t.Fatalf("status = %q, want %q", status, integrationStatusPublished)
+	}
+
+	if failedAttempts != 1 {
+		t.Fatalf("failed_attempts = %d, want 1", failedAttempts)
 	}
 
 	if lockedBy != nil {
@@ -465,8 +483,8 @@ WHERE id = $1`,
 		t.Fatal("published_at was not set")
 	}
 
-	if lastError != nil {
-		t.Fatalf("last_error = %q, want nil", *lastError)
+	if lastFailureReason == nil || *lastFailureReason != string(PublishOutcomeFailed) {
+		t.Fatalf("last_failure_reason = %v, want %q", lastFailureReason, PublishOutcomeFailed)
 	}
 }
 
@@ -490,17 +508,18 @@ func TestPostgresStoreScheduleRetryUsesDatabaseTime(t *testing.T) {
 		eventID,
 		aggregateID,
 		workerID,
+		1,
 		integrationDatabaseNow(t, pool).Add(time.Hour),
 	)
 
 	databaseTimeBefore := integrationDatabaseNow(t, pool)
 
-	nextAvailableAt, err := store.ScheduleRetry(
+	err := store.ScheduleRetry(
 		context.Background(),
 		workerID,
 		eventID,
 		retryDelay,
-		publishFailureFailed,
+		PublishOutcomeFailed,
 	)
 	if err != nil {
 		t.Fatalf("ScheduleRetry returned error: %v", err)
@@ -511,30 +530,14 @@ func TestPostgresStoreScheduleRetryUsesDatabaseTime(t *testing.T) {
 	earliestExpected := databaseTimeBefore.Add(retryDelay)
 	latestExpected := databaseTimeAfter.Add(retryDelay)
 
-	if nextAvailableAt.Before(earliestExpected) {
-		t.Fatalf(
-			"next available at %s is before earliest expected %s",
-			nextAvailableAt,
-			earliestExpected,
-		)
-	}
-
-	if nextAvailableAt.After(latestExpected) {
-		t.Fatalf(
-			"next available at %s is after latest expected %s",
-			nextAvailableAt,
-			latestExpected,
-		)
-	}
-
 	var (
-		status      string
-		attempts    int
-		availableAt time.Time
-		lockedBy    *string
-		lockedUntil *time.Time
-		lastError   *string
-		publishedAt *time.Time
+		status            string
+		failedAttempts    int
+		availableAt       time.Time
+		lockedBy          *string
+		lockedUntil       *time.Time
+		lastFailureReason *string
+		publishedAt       *time.Time
 	)
 
 	err = pool.QueryRow(
@@ -542,38 +545,41 @@ func TestPostgresStoreScheduleRetryUsesDatabaseTime(t *testing.T) {
 		`
 SELECT
     status,
-    attempts,
+    failed_attempts,
     available_at,
     locked_by,
     locked_until,
-    last_error,
+    last_failure_reason,
     published_at
 FROM outbox_events
 WHERE id = $1`,
 		eventID,
 	).Scan(
 		&status,
-		&attempts,
+		&failedAttempts,
 		&availableAt,
 		&lockedBy,
 		&lockedUntil,
-		&lastError,
+		&lastFailureReason,
 		&publishedAt,
 	)
 	if err != nil {
 		t.Fatalf("query retry event: %v", err)
 	}
 
-	if status != StatusPending {
-		t.Fatalf("status = %q, want %q", status, StatusPending)
+	if status != integrationStatusPending {
+		t.Fatalf("status = %q, want %q", status, integrationStatusPending)
 	}
 
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
+	if failedAttempts != 2 {
+		t.Fatalf("failed_attempts = %d, want 2", failedAttempts)
 	}
 
-	if !availableAt.Equal(nextAvailableAt) {
-		t.Fatalf("stored available_at = %s, returned %s", availableAt, nextAvailableAt)
+	if availableAt.Before(earliestExpected) {
+		t.Fatalf("stored available_at = %s, before earliest expected %s", availableAt, earliestExpected)
+	}
+	if availableAt.After(latestExpected) {
+		t.Fatalf("stored available_at = %s, after latest expected %s", availableAt, latestExpected)
 	}
 
 	if lockedBy != nil {
@@ -584,8 +590,8 @@ WHERE id = $1`,
 		t.Fatalf("locked_until = %s, want nil", lockedUntil)
 	}
 
-	if lastError == nil || *lastError != publishFailureFailed {
-		t.Fatalf("last_error = %v, want %q", lastError, publishFailureFailed)
+	if lastFailureReason == nil || *lastFailureReason != string(PublishOutcomeFailed) {
+		t.Fatalf("last_failure_reason = %v, want %q", lastFailureReason, PublishOutcomeFailed)
 	}
 
 	if publishedAt != nil {
@@ -612,6 +618,7 @@ func TestPostgresStoreMarkDeadLetter(t *testing.T) {
 		eventID,
 		aggregateID,
 		workerID,
+		1,
 		integrationDatabaseNow(t, pool).Add(time.Hour),
 	)
 
@@ -619,19 +626,19 @@ func TestPostgresStoreMarkDeadLetter(t *testing.T) {
 		context.Background(),
 		workerID,
 		eventID,
-		publishFailureFailed,
+		PublishOutcomeFailed,
 	); err != nil {
 		t.Fatalf("MarkDeadLetter returned error: %v", err)
 	}
 
 	var (
-		status         string
-		attempts       int
-		lockedBy       *string
-		lockedUntil    *time.Time
-		lastError      *string
-		publishedAt    *time.Time
-		deadLetteredAt *time.Time
+		status            string
+		failedAttempts    int
+		lockedBy          *string
+		lockedUntil       *time.Time
+		lastFailureReason *string
+		publishedAt       *time.Time
+		deadLetteredAt    *time.Time
 	)
 
 	err := pool.QueryRow(
@@ -639,10 +646,10 @@ func TestPostgresStoreMarkDeadLetter(t *testing.T) {
 		`
 SELECT
     status,
-    attempts,
+    failed_attempts,
     locked_by,
     locked_until,
-    last_error,
+    last_failure_reason,
     published_at,
     dead_lettered_at
 FROM outbox_events
@@ -650,10 +657,10 @@ WHERE id = $1`,
 		eventID,
 	).Scan(
 		&status,
-		&attempts,
+		&failedAttempts,
 		&lockedBy,
 		&lockedUntil,
-		&lastError,
+		&lastFailureReason,
 		&publishedAt,
 		&deadLetteredAt,
 	)
@@ -661,12 +668,12 @@ WHERE id = $1`,
 		t.Fatalf("query dead-letter event: %v", err)
 	}
 
-	if status != StatusDeadLetter {
-		t.Fatalf("status = %q, want %q", status, StatusDeadLetter)
+	if status != integrationStatusDeadLetter {
+		t.Fatalf("status = %q, want %q", status, integrationStatusDeadLetter)
 	}
 
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
+	if failedAttempts != 2 {
+		t.Fatalf("failed_attempts = %d, want 2", failedAttempts)
 	}
 
 	if lockedBy != nil {
@@ -677,8 +684,8 @@ WHERE id = $1`,
 		t.Fatalf("locked_until = %s, want nil", lockedUntil)
 	}
 
-	if lastError == nil || *lastError != publishFailureFailed {
-		t.Fatalf("last_error = %v, want %q", lastError, publishFailureFailed)
+	if lastFailureReason == nil || *lastFailureReason != string(PublishOutcomeFailed) {
+		t.Fatalf("last_failure_reason = %v, want %q", lastFailureReason, PublishOutcomeFailed)
 	}
 
 	if publishedAt != nil {
@@ -687,6 +694,109 @@ WHERE id = $1`,
 
 	if deadLetteredAt == nil || deadLetteredAt.IsZero() {
 		t.Fatal("dead_lettered_at was not set")
+	}
+}
+
+func TestOutboxFailureReasonConstraintRejectsUnknownValue(t *testing.T) {
+	pool := openIntegrationPool(t)
+
+	eventID := integrationEventID(t)
+	aggregateID := integrationEventID(t)
+	cleanupIntegrationOutboxEvent(t, pool, eventID)
+	t.Cleanup(func() {
+		cleanupIntegrationOutboxEvent(t, pool, eventID)
+	})
+
+	_, err := pool.Exec(
+		context.Background(),
+		`
+INSERT INTO outbox_events (
+    id,
+    aggregate_type,
+    aggregate_id,
+    event_type,
+    payload,
+    status,
+    failed_attempts,
+    last_failure_reason
+)
+VALUES ($1, 'reward_claim', $2, 'RewardClaimed', '{"schema_version":1}', 'pending', 1, 'publish_failed')`,
+		eventID,
+		aggregateID,
+	)
+	assertIntegrationCheckViolation(t, err, "outbox_events_last_failure_reason_chk")
+}
+
+func TestOutboxFailureStateConstraintRejectsInconsistentRows(t *testing.T) {
+	pool := openIntegrationPool(t)
+
+	tests := []struct {
+		name              string
+		status            string
+		failedAttempts    int
+		lastFailureReason any
+		publishedAt       any
+		deadLetteredAt    any
+	}{
+		{
+			name:           "pending failures without reason",
+			status:         integrationStatusPending,
+			failedAttempts: 1,
+		},
+		{
+			name:              "pending reason without failures",
+			status:            integrationStatusPending,
+			lastFailureReason: string(PublishOutcomeFailed),
+		},
+		{
+			name:           "published failures without reason",
+			status:         integrationStatusPublished,
+			failedAttempts: 1,
+			publishedAt:    time.Now().UTC(),
+		},
+		{
+			name:              "dead letter without failed attempts",
+			status:            integrationStatusDeadLetter,
+			lastFailureReason: string(PublishOutcomeFailed),
+			deadLetteredAt:    time.Now().UTC(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventID := integrationEventID(t)
+			aggregateID := integrationEventID(t)
+			cleanupIntegrationOutboxEvent(t, pool, eventID)
+			t.Cleanup(func() {
+				cleanupIntegrationOutboxEvent(t, pool, eventID)
+			})
+
+			_, err := pool.Exec(
+				context.Background(),
+				`
+INSERT INTO outbox_events (
+    id,
+    aggregate_type,
+    aggregate_id,
+    event_type,
+    payload,
+    status,
+    failed_attempts,
+    last_failure_reason,
+    published_at,
+    dead_lettered_at
+)
+VALUES ($1, 'reward_claim', $2, 'RewardClaimed', '{"schema_version":1}', $3, $4, $5, $6, $7)`,
+				eventID,
+				aggregateID,
+				tt.status,
+				tt.failedAttempts,
+				tt.lastFailureReason,
+				tt.publishedAt,
+				tt.deadLetteredAt,
+			)
+			assertIntegrationCheckViolation(t, err, "outbox_events_failure_state_chk")
+		})
 	}
 }
 
@@ -709,6 +819,7 @@ func TestPostgresStoreAllowsLeaseOwnerToCompleteExpiredUnreclaimedLease(t *testi
 		eventID,
 		aggregateID,
 		workerID,
+		0,
 		integrationDatabaseNow(t, pool).Add(-time.Minute),
 	)
 
@@ -735,8 +846,8 @@ WHERE id = $1`,
 		t.Fatalf("query completed event: %v", err)
 	}
 
-	if status != StatusPublished {
-		t.Fatalf("status = %q, want %q", status, StatusPublished)
+	if status != integrationStatusPublished {
+		t.Fatalf("status = %q, want %q", status, integrationStatusPublished)
 	}
 
 	if lockedBy != nil {
@@ -772,6 +883,7 @@ func TestPostgresStoreStaleWorkerCannotOverwriteReclaimedLease(t *testing.T) {
 		eventID,
 		aggregateID,
 		oldWorkerID,
+		1,
 		integrationDatabaseNow(t, pool).Add(-time.Minute),
 	)
 
@@ -793,12 +905,12 @@ func TestPostgresStoreStaleWorkerCannotOverwriteReclaimedLease(t *testing.T) {
 		t.Fatalf("old worker MarkPublished error = %v, want ErrLeaseLost", err)
 	}
 
-	_, err = store.ScheduleRetry(
+	err = store.ScheduleRetry(
 		context.Background(),
 		oldWorkerID,
 		eventID,
 		time.Minute,
-		publishFailureFailed,
+		PublishOutcomeFailed,
 	)
 	if !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("old worker ScheduleRetry error = %v, want ErrLeaseLost", err)
@@ -808,40 +920,40 @@ func TestPostgresStoreStaleWorkerCannotOverwriteReclaimedLease(t *testing.T) {
 		context.Background(),
 		oldWorkerID,
 		eventID,
-		publishFailureFailed,
+		PublishOutcomeFailed,
 	)
 	if !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("old worker MarkDeadLetter error = %v, want ErrLeaseLost", err)
 	}
 
 	var (
-		status   string
-		lockedBy string
-		attempts int
+		status         string
+		lockedBy       string
+		failedAttempts int
 	)
 
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT status, locked_by, attempts
+SELECT status, locked_by, failed_attempts
 FROM outbox_events
 WHERE id = $1`,
 		eventID,
-	).Scan(&status, &lockedBy, &attempts)
+	).Scan(&status, &lockedBy, &failedAttempts)
 	if err != nil {
 		t.Fatalf("query event after stale writes: %v", err)
 	}
 
-	if status != StatusProcessing {
-		t.Fatalf("status = %q, want %q", status, StatusProcessing)
+	if status != integrationStatusProcessing {
+		t.Fatalf("status = %q, want %q", status, integrationStatusProcessing)
 	}
 
 	if lockedBy != newWorkerID {
 		t.Fatalf("locked_by = %q, want %q", lockedBy, newWorkerID)
 	}
 
-	if attempts != 1 {
-		t.Fatalf("attempts = %d, want 1", attempts)
+	if failedAttempts != 1 {
+		t.Fatalf("failed_attempts = %d, want 1", failedAttempts)
 	}
 
 	if err := store.MarkPublished(context.Background(), newWorkerID, eventID); err != nil {
@@ -862,8 +974,8 @@ WHERE id = $1`,
 		t.Fatalf("query completed event: %v", err)
 	}
 
-	if finalStatus != StatusPublished {
-		t.Fatalf("final status = %q, want %q", finalStatus, StatusPublished)
+	if finalStatus != integrationStatusPublished {
+		t.Fatalf("final status = %q, want %q", finalStatus, integrationStatusPublished)
 	}
 }
 
@@ -872,8 +984,8 @@ func TestPostgresStoreClaimNextSkipsTerminalEvents(t *testing.T) {
 		name   string
 		status string
 	}{
-		{name: "published", status: StatusPublished},
-		{name: "dead letter", status: StatusDeadLetter},
+		{name: "published", status: integrationStatusPublished},
+		{name: "dead letter", status: integrationStatusDeadLetter},
 	}
 
 	for _, tt := range tests {
@@ -1025,7 +1137,7 @@ func insertIntegrationOutboxEvent(
 	eventID string,
 	aggregateID string,
 	status string,
-	attempts int,
+	failedAttempts int,
 	availableAt time.Time,
 ) {
 	t.Helper()
@@ -1040,7 +1152,7 @@ INSERT INTO outbox_events (
     event_type,
     payload,
     status,
-    attempts,
+    failed_attempts,
     available_at
 )
 VALUES (
@@ -1056,7 +1168,7 @@ VALUES (
 		eventID,
 		aggregateID,
 		status,
-		attempts,
+		failedAttempts,
 		availableAt,
 	)
 	if err != nil {
@@ -1070,9 +1182,15 @@ func insertIntegrationProcessingOutboxEvent(
 	eventID string,
 	aggregateID string,
 	workerID string,
+	failedAttempts int,
 	lockedUntil time.Time,
 ) {
 	t.Helper()
+
+	var lastFailureReason any
+	if failedAttempts > 0 {
+		lastFailureReason = string(PublishOutcomeFailed)
+	}
 
 	_, err := pool.Exec(
 		context.Background(),
@@ -1084,8 +1202,9 @@ INSERT INTO outbox_events (
     event_type,
     payload,
     status,
-    attempts,
+    failed_attempts,
     available_at,
+    last_failure_reason,
     locked_by,
     locked_until
 )
@@ -1096,14 +1215,17 @@ VALUES (
     'RewardClaimed',
     '{"schema_version":1}',
     'processing',
-    1,
     $3,
     $4,
-    $5
+    $5,
+    $6,
+    $7
 )`,
 		eventID,
 		aggregateID,
+		failedAttempts,
 		time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC),
+		lastFailureReason,
 		workerID,
 		lockedUntil,
 	)
@@ -1124,7 +1246,7 @@ func insertIntegrationTerminalOutboxEvent(
 	availableAt := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 	switch status {
-	case StatusPublished:
+	case integrationStatusPublished:
 		_, err := pool.Exec(
 			context.Background(),
 			`
@@ -1135,7 +1257,7 @@ INSERT INTO outbox_events (
     event_type,
     payload,
     status,
-    attempts,
+    failed_attempts,
     available_at,
     published_at
 )
@@ -1158,7 +1280,7 @@ VALUES (
 			t.Fatalf("insert published outbox event: %v", err)
 		}
 
-	case StatusDeadLetter:
+	case integrationStatusDeadLetter:
 		_, err := pool.Exec(
 			context.Background(),
 			`
@@ -1169,9 +1291,9 @@ INSERT INTO outbox_events (
     event_type,
     payload,
     status,
-    attempts,
+    failed_attempts,
     available_at,
-    last_error,
+    last_failure_reason,
     dead_lettered_at
 )
 VALUES (
@@ -1189,7 +1311,7 @@ VALUES (
 			eventID,
 			aggregateID,
 			availableAt,
-			publishFailureFailed,
+			string(PublishOutcomeFailed),
 		)
 		if err != nil {
 			t.Fatalf("insert dead-letter outbox event: %v", err)
@@ -1197,6 +1319,25 @@ VALUES (
 
 	default:
 		t.Fatalf("unsupported terminal status %q", status)
+	}
+}
+
+func assertIntegrationCheckViolation(t *testing.T, err error, constraintName string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("expected check constraint violation, got nil")
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("error = %T %v, want PostgreSQL error", err, err)
+	}
+	if pgErr.Code != "23514" {
+		t.Fatalf("PostgreSQL error code = %q, want check_violation (23514)", pgErr.Code)
+	}
+	if pgErr.ConstraintName != constraintName {
+		t.Fatalf("constraint = %q, want %q", pgErr.ConstraintName, constraintName)
 	}
 }
 

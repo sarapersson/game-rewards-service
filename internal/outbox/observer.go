@@ -33,8 +33,8 @@ type Observer interface {
 	ObserveClaim(ClaimOutcome)
 	ObservePublish(eventType string, outcome PublishOutcome, duration time.Duration)
 	ObservePublished(eventType string)
-	ObserveRetry(eventType, failureReason string)
-	ObserveDeadLetter(eventType, failureReason string)
+	ObserveRetry(eventType string, outcome PublishOutcome)
+	ObserveDeadLetter(eventType string, outcome PublishOutcome)
 	ObserveLeaseLoss(eventType string, operation Operation)
 	ObserveOperationError(operation Operation)
 }
@@ -44,7 +44,7 @@ type noopObserver struct{}
 func (noopObserver) ObserveClaim(ClaimOutcome)                            {}
 func (noopObserver) ObservePublish(string, PublishOutcome, time.Duration) {}
 func (noopObserver) ObservePublished(string)                              {}
-func (noopObserver) ObserveRetry(string, string)                          {}
-func (noopObserver) ObserveDeadLetter(string, string)                     {}
+func (noopObserver) ObserveRetry(string, PublishOutcome)                  {}
+func (noopObserver) ObserveDeadLetter(string, PublishOutcome)             {}
 func (noopObserver) ObserveLeaseLoss(string, Operation)                   {}
 func (noopObserver) ObserveOperationError(Operation)                      {}

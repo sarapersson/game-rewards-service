@@ -27,7 +27,7 @@ const (
 	defaultWorkerPollInterval    = 1 * time.Second
 	defaultOutboxLockTTL         = 30 * time.Second
 	defaultOutboxPublishTimeout  = 5 * time.Second
-	defaultOutboxMaxAttempts     = 5
+	defaultOutboxMaxFailures     = 5
 	defaultOutboxBaseBackoff     = 1 * time.Second
 	defaultOutboxMaxBackoff      = 1 * time.Minute
 )
@@ -74,7 +74,7 @@ type OutboxConfig struct {
 	PollInterval   time.Duration
 	LockTTL        time.Duration
 	PublishTimeout time.Duration
-	MaxAttempts    int
+	MaxFailures    int
 	BaseBackoff    time.Duration
 	MaxBackoff     time.Duration
 }
@@ -261,7 +261,7 @@ func loadOutboxConfig(lookup lookupFunc) (OutboxConfig, error) {
 		return OutboxConfig{}, err
 	}
 
-	cfg.MaxAttempts, err = getInt(lookup, "OUTBOX_MAX_ATTEMPTS", defaultOutboxMaxAttempts)
+	cfg.MaxFailures, err = getInt(lookup, "OUTBOX_MAX_FAILURES", defaultOutboxMaxFailures)
 	if err != nil {
 		return OutboxConfig{}, err
 	}
@@ -365,17 +365,20 @@ func getLogLevel(lookup lookupFunc, key string, defaultValue slog.Level) (slog.L
 }
 
 func validateOutbox(cfg OutboxConfig, queryTimeout time.Duration) error {
+	const leaseBudgetError = "OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus twice DB_QUERY_TIMEOUT"
+
 	if cfg.LockTTL <= cfg.PublishTimeout {
-		return fmt.Errorf(
-			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",
-		)
+		return fmt.Errorf(leaseBudgetError)
 	}
 
 	remainingLeaseTime := cfg.LockTTL - cfg.PublishTimeout
 	if remainingLeaseTime <= queryTimeout {
-		return fmt.Errorf(
-			"OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus DB_QUERY_TIMEOUT",
-		)
+		return fmt.Errorf(leaseBudgetError)
+	}
+
+	remainingLeaseTime -= queryTimeout
+	if remainingLeaseTime <= queryTimeout {
+		return fmt.Errorf(leaseBudgetError)
 	}
 
 	if cfg.MaxBackoff < cfg.BaseBackoff {

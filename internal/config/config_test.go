@@ -51,8 +51,8 @@ func TestLoadWorkerWithLookupUsesDefaults(t *testing.T) {
 	if cfg.Outbox.PublishTimeout != 5*time.Second {
 		t.Fatalf("expected outbox publish timeout 5s, got %s", cfg.Outbox.PublishTimeout)
 	}
-	if cfg.Outbox.MaxAttempts != 5 {
-		t.Fatalf("expected outbox max attempts 5, got %d", cfg.Outbox.MaxAttempts)
+	if cfg.Outbox.MaxFailures != 5 {
+		t.Fatalf("expected outbox max failures 5, got %d", cfg.Outbox.MaxFailures)
 	}
 	if cfg.Outbox.BaseBackoff != time.Second {
 		t.Fatalf("expected outbox base backoff 1s, got %s", cfg.Outbox.BaseBackoff)
@@ -100,7 +100,7 @@ func TestLoadWorkerWithLookupUsesEnvironmentOverrides(t *testing.T) {
 		"WORKER_POLL_INTERVAL":     "250ms",
 		"OUTBOX_LOCK_TTL":          "45s",
 		"OUTBOX_PUBLISH_TIMEOUT":   "10s",
-		"OUTBOX_MAX_ATTEMPTS":      "7",
+		"OUTBOX_MAX_FAILURES":      "7",
 		"OUTBOX_BASE_BACKOFF":      "2s",
 		"OUTBOX_MAX_BACKOFF":       "2m",
 		"SHUTDOWN_TIMEOUT":         "3s",
@@ -122,8 +122,8 @@ func TestLoadWorkerWithLookupUsesEnvironmentOverrides(t *testing.T) {
 	if cfg.Outbox.PublishTimeout != 10*time.Second {
 		t.Fatalf("expected outbox publish timeout 10s, got %s", cfg.Outbox.PublishTimeout)
 	}
-	if cfg.Outbox.MaxAttempts != 7 {
-		t.Fatalf("expected outbox max attempts 7, got %d", cfg.Outbox.MaxAttempts)
+	if cfg.Outbox.MaxFailures != 7 {
+		t.Fatalf("expected outbox max failures 7, got %d", cfg.Outbox.MaxFailures)
 	}
 	if cfg.Outbox.BaseBackoff != 2*time.Second {
 		t.Fatalf("expected outbox base backoff 2s, got %s", cfg.Outbox.BaseBackoff)
@@ -139,7 +139,7 @@ func TestLoadAPIIgnoresWorkerOnlyOverrides(t *testing.T) {
 		"WORKER_POLL_INTERVAL":   "not-a-duration",
 		"OUTBOX_LOCK_TTL":        "1s",
 		"OUTBOX_PUBLISH_TIMEOUT": "5s",
-		"OUTBOX_MAX_ATTEMPTS":    "0",
+		"OUTBOX_MAX_FAILURES":    "0",
 		"OUTBOX_BASE_BACKOFF":    "10s",
 		"OUTBOX_MAX_BACKOFF":     "5s",
 	}))
@@ -200,7 +200,7 @@ func TestProcessLoadersRejectBlankOwnedOverrides(t *testing.T) {
 				"WORKER_POLL_INTERVAL",
 				"OUTBOX_LOCK_TTL",
 				"OUTBOX_PUBLISH_TIMEOUT",
-				"OUTBOX_MAX_ATTEMPTS",
+				"OUTBOX_MAX_FAILURES",
 				"OUTBOX_BASE_BACKOFF",
 				"OUTBOX_MAX_BACKOFF",
 				"SHUTDOWN_TIMEOUT",
@@ -264,8 +264,8 @@ func TestLoadWorkerWithLookupRejectsInvalidOutboxValues(t *testing.T) {
 		wantKey string
 	}{
 		{name: "poll interval", values: map[string]string{"WORKER_POLL_INTERVAL": "0s"}, wantKey: "WORKER_POLL_INTERVAL"},
-		{name: "max attempts format", values: map[string]string{"OUTBOX_MAX_ATTEMPTS": "not-an-int"}, wantKey: "OUTBOX_MAX_ATTEMPTS"},
-		{name: "max attempts value", values: map[string]string{"OUTBOX_MAX_ATTEMPTS": "0"}, wantKey: "OUTBOX_MAX_ATTEMPTS"},
+		{name: "max failures format", values: map[string]string{"OUTBOX_MAX_FAILURES": "not-an-int"}, wantKey: "OUTBOX_MAX_FAILURES"},
+		{name: "max failures value", values: map[string]string{"OUTBOX_MAX_FAILURES": "0"}, wantKey: "OUTBOX_MAX_FAILURES"},
 	}
 
 	for _, tt := range tests {
@@ -291,9 +291,11 @@ func TestLoadWorkerWithLookupValidatesLeaseBudget(t *testing.T) {
 	}{
 		{name: "lock ttl shorter than publish timeout", lockTTL: "4s", publishTime: "5s", queryTime: "2s", wantErr: true},
 		{name: "lock ttl equals publish timeout", lockTTL: "5s", publishTime: "5s", queryTime: "2s", wantErr: true},
-		{name: "lock ttl shorter than timeout sum", lockTTL: "6s", publishTime: "5s", queryTime: "2s", wantErr: true},
-		{name: "lock ttl equals timeout sum", lockTTL: "7s", publishTime: "5s", queryTime: "2s", wantErr: true},
-		{name: "lock ttl greater than timeout sum", lockTTL: "8s", publishTime: "5s", queryTime: "2s", wantErr: false},
+		{name: "lock ttl shorter than publish plus one query", lockTTL: "6s", publishTime: "5s", queryTime: "2s", wantErr: true},
+		{name: "lock ttl equals publish plus one query", lockTTL: "7s", publishTime: "5s", queryTime: "2s", wantErr: true},
+		{name: "lock ttl covers one query but not two", lockTTL: "8s", publishTime: "5s", queryTime: "2s", wantErr: true},
+		{name: "lock ttl equals publish plus two queries", lockTTL: "9s", publishTime: "5s", queryTime: "2s", wantErr: true},
+		{name: "lock ttl exceeds publish plus two queries", lockTTL: "10s", publishTime: "5s", queryTime: "2s", wantErr: false},
 	}
 
 	for _, tt := range tests {
@@ -318,6 +320,24 @@ func TestLoadWorkerWithLookupValidatesLeaseBudget(t *testing.T) {
 				t.Fatalf("expected no error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateOutboxLeaseBudgetDoesNotOverflow(t *testing.T) {
+	const maxDuration = time.Duration(1<<63 - 1)
+
+	err := validateOutbox(
+		OutboxConfig{
+			LockTTL:        maxDuration,
+			PublishTimeout: maxDuration - 3*time.Second,
+		},
+		2*time.Second,
+	)
+	if err == nil {
+		t.Fatal("expected lease budget error, got nil")
+	}
+	if !strings.Contains(err.Error(), "OUTBOX_LOCK_TTL") {
+		t.Fatalf("expected OUTBOX_LOCK_TTL error, got %v", err)
 	}
 }
 

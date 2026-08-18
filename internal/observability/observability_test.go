@@ -228,8 +228,8 @@ func TestWorkerMetricsNormalizeEventTypesAndRecordTransitions(t *testing.T) {
 	metrics.ObserveClaim(outbox.ClaimOutcomeClaimed)
 	metrics.ObservePublish("RewardClaimed", outbox.PublishOutcomeSuccess, 25*time.Millisecond)
 	metrics.ObservePublished("RewardClaimed")
-	metrics.ObserveRetry("unexpected-user-value", "raw downstream error")
-	metrics.ObserveDeadLetter("RewardClaimed", "publish_timeout")
+	metrics.ObserveRetry("unexpected-user-value", outbox.PublishOutcome("unexpected"))
+	metrics.ObserveDeadLetter("RewardClaimed", outbox.PublishOutcomeTimeout)
 	metrics.ObserveLeaseLoss("RewardClaimed", outbox.OperationMarkPublished)
 	metrics.ObserveOperationError(outbox.OperationMarkPublished)
 
@@ -240,7 +240,7 @@ func TestWorkerMetricsNormalizeEventTypesAndRecordTransitions(t *testing.T) {
 		`game_rewards_outbox_publish_duration_seconds_count{event_type="reward_claimed",outcome="success"} 1`,
 		`game_rewards_outbox_events_published_total{event_type="reward_claimed"} 1`,
 		`game_rewards_outbox_retries_scheduled_total{event_type="unknown",failure_reason="unknown"} 1`,
-		`game_rewards_outbox_events_dead_lettered_total{event_type="reward_claimed",failure_reason="publish_timeout"} 1`,
+		`game_rewards_outbox_events_dead_lettered_total{event_type="reward_claimed",failure_reason="timeout"} 1`,
 		`game_rewards_outbox_lease_losses_total{event_type="reward_claimed",operation="mark_published"} 1`,
 		`game_rewards_outbox_operation_errors_total{operation="mark_published"} 1`,
 	} {
@@ -248,7 +248,7 @@ func TestWorkerMetricsNormalizeEventTypesAndRecordTransitions(t *testing.T) {
 			t.Fatalf("want %q in metrics:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "unexpected-user-value") || strings.Contains(got, "raw downstream error") {
+	if strings.Contains(got, "unexpected-user-value") {
 		t.Fatal("worker metrics exposed unbounded values")
 	}
 }

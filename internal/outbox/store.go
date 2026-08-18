@@ -27,9 +27,9 @@ type Store interface {
 		ctx context.Context,
 		workerID, eventID string,
 		retryDelay time.Duration,
-		lastError string,
-	) (time.Time, error)
-	MarkDeadLetter(ctx context.Context, workerID, eventID, lastError string) error
+		outcome PublishOutcome,
+	) error
+	MarkDeadLetter(ctx context.Context, workerID, eventID string, outcome PublishOutcome) error
 }
 
 type postgresStore struct {
@@ -93,10 +93,7 @@ RETURNING
     o.aggregate_id::text,
     o.event_type,
     o.payload,
-    o.status,
-    o.attempts,
-    o.available_at,
-    o.created_at;
+    o.failed_attempts;
 `
 
 	var (
@@ -115,10 +112,7 @@ RETURNING
 		&event.AggregateID,
 		&event.EventType,
 		&payload,
-		&event.Status,
-		&event.Attempts,
-		&event.AvailableAt,
-		&event.CreatedAt,
+		&event.FailedAttempts,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -151,7 +145,6 @@ SET status = 'published',
     published_at = now(),
     locked_by = NULL,
     locked_until = NULL,
-    last_error = NULL,
     updated_at = now()
 WHERE id = $1
   AND status = 'processing'
@@ -174,18 +167,18 @@ func (s *postgresStore) ScheduleRetry(
 	ctx context.Context,
 	workerID, eventID string,
 	retryDelay time.Duration,
-	lastError string,
-) (time.Time, error) {
+	outcome PublishOutcome,
+) error {
 	if workerID == "" {
-		return time.Time{}, fmt.Errorf("worker id must not be empty")
+		return fmt.Errorf("worker id must not be empty")
 	}
 
 	if eventID == "" {
-		return time.Time{}, fmt.Errorf("event id must not be empty")
+		return fmt.Errorf("event id must not be empty")
 	}
 
 	if retryDelay <= 0 {
-		return time.Time{}, fmt.Errorf("retry delay must be greater than zero")
+		return fmt.Errorf("retry delay must be greater than zero")
 	}
 
 	queryCtx, cancel := s.queryContext(ctx)
@@ -194,42 +187,40 @@ func (s *postgresStore) ScheduleRetry(
 	const query = `
 UPDATE outbox_events
 SET status = 'pending',
-    attempts = attempts + 1,
+    failed_attempts = failed_attempts + 1,
     available_at = now() + make_interval(secs => $3::double precision),
     locked_by = NULL,
     locked_until = NULL,
-    last_error = $4,
+    last_failure_reason = $4,
     updated_at = now()
 WHERE id = $1
   AND status = 'processing'
-  AND locked_by = $2
-RETURNING available_at;
+  AND locked_by = $2;
 `
 
-	var nextAvailableAt time.Time
-
-	err := s.pool.QueryRow(
+	result, err := s.pool.Exec(
 		queryCtx,
 		query,
 		eventID,
 		workerID,
 		retryDelay.Seconds(),
-		lastError,
-	).Scan(&nextAvailableAt)
+		string(outcome),
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return time.Time{}, fmt.Errorf("schedule outbox event retry: %w", ErrLeaseLost)
-		}
-
-		return time.Time{}, fmt.Errorf("schedule outbox event retry: %w", mapPostgresError(queryCtx, err))
+		return fmt.Errorf("schedule outbox event retry: %w", mapPostgresError(queryCtx, err))
 	}
 
-	return nextAvailableAt, nil
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("schedule outbox event retry: %w", ErrLeaseLost)
+	}
+
+	return nil
 }
 
 func (s *postgresStore) MarkDeadLetter(
 	ctx context.Context,
-	workerID, eventID, lastError string,
+	workerID, eventID string,
+	outcome PublishOutcome,
 ) error {
 	if workerID == "" {
 		return fmt.Errorf("worker id must not be empty")
@@ -245,18 +236,18 @@ func (s *postgresStore) MarkDeadLetter(
 	const query = `
 UPDATE outbox_events
 SET status = 'dead_letter',
-    attempts = attempts + 1,
+    failed_attempts = failed_attempts + 1,
     dead_lettered_at = now(),
     locked_by = NULL,
     locked_until = NULL,
-    last_error = $3,
+    last_failure_reason = $3,
     updated_at = now()
 WHERE id = $1
   AND status = 'processing'
   AND locked_by = $2;
 `
 
-	result, err := s.pool.Exec(queryCtx, query, eventID, workerID, lastError)
+	result, err := s.pool.Exec(queryCtx, query, eventID, workerID, string(outcome))
 	if err != nil {
 		return fmt.Errorf("mark outbox event dead letter: %w", mapPostgresError(queryCtx, err))
 	}

@@ -9,13 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	maxWorkerIDLength = 128
-
-	publishFailureFailed   = "publish_failed"
-	publishFailureTimeout  = "publish_timeout"
-	publishFailureCanceled = "publish_canceled"
-)
+const maxWorkerIDLength = 128
 
 var errWorkerFatal = errors.New("outbox worker internal failure")
 
@@ -53,7 +47,7 @@ type Worker struct {
 	pollInterval   time.Duration
 	lockTTL        time.Duration
 	publishTimeout time.Duration
-	maxAttempts    int
+	maxFailures    int
 	backoff        backoffPolicy
 	observer       Observer
 }
@@ -63,7 +57,7 @@ type WorkerConfig struct {
 	PollInterval   time.Duration
 	LockTTL        time.Duration
 	PublishTimeout time.Duration
-	MaxAttempts    int
+	MaxFailures    int
 	BaseBackoff    time.Duration
 	MaxBackoff     time.Duration
 	Observer       Observer
@@ -106,8 +100,8 @@ func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg Worker
 		return nil, fmt.Errorf("lock ttl must be greater than publish timeout")
 	}
 
-	if cfg.MaxAttempts <= 0 {
-		return nil, fmt.Errorf("max attempts must be greater than zero")
+	if cfg.MaxFailures <= 0 {
+		return nil, fmt.Errorf("max failures must be greater than zero")
 	}
 
 	backoff, err := newBackoffPolicy(cfg.BaseBackoff, cfg.MaxBackoff)
@@ -128,7 +122,7 @@ func NewWorker(store Store, publisher Publisher, logger *slog.Logger, cfg Worker
 		pollInterval:   cfg.PollInterval,
 		lockTTL:        cfg.LockTTL,
 		publishTimeout: cfg.PublishTimeout,
-		maxAttempts:    cfg.MaxAttempts,
+		maxFailures:    cfg.MaxFailures,
 		backoff:        backoff,
 		observer:       observer,
 	}, nil
@@ -207,7 +201,7 @@ func (w *Worker) Run(ctx context.Context, onStarted func()) error {
 			}
 
 			wait := w.pollInterval
-			if processed > 0 {
+			if processed {
 				wait = 0
 			}
 
@@ -216,21 +210,21 @@ func (w *Worker) Run(ctx context.Context, onStarted func()) error {
 	}
 }
 
-func (w *Worker) runOnce(ctx context.Context) (int, error) {
+func (w *Worker) runOnce(ctx context.Context) (bool, error) {
 	event, claimed, err := w.store.ClaimNext(ctx, w.workerID, w.lockTTL)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
-			return 0, ctxErr
+			return false, ctxErr
 		}
 
 		w.observer.ObserveClaim(ClaimOutcomeError)
 		w.observer.ObserveOperationError(OperationClaim)
-		return 0, wrapWorkerOperationError(OperationClaim, err)
+		return false, wrapWorkerOperationError(OperationClaim, err)
 	}
 
 	if !claimed {
 		w.observer.ObserveClaim(ClaimOutcomeEmpty)
-		return 0, nil
+		return false, nil
 	}
 
 	w.observer.ObserveClaim(ClaimOutcomeClaimed)
@@ -245,13 +239,13 @@ func (w *Worker) runOnce(ctx context.Context) (int, error) {
 
 	if err := w.processEvent(ctx, event); err != nil {
 		if errors.Is(err, ErrLeaseLost) {
-			return 0, nil
+			return false, nil
 		}
 
-		return 0, err
+		return false, err
 	}
 
-	return 1, nil
+	return true, nil
 }
 
 func (w *Worker) processEvent(ctx context.Context, event Event) error {
@@ -259,7 +253,6 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 	defer cancel()
 
 	started := time.Now()
-	attemptNumber := event.Attempts + 1
 
 	w.logger.InfoContext(
 		ctx,
@@ -269,8 +262,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 		slog.String("event_type", event.EventType),
 		slog.String("aggregate_type", event.AggregateType),
 		slog.String("aggregate_id", event.AggregateID),
-		slog.Int("attempt_number", attemptNumber),
-		slog.Int("failed_attempts", event.Attempts),
+		slog.Int("failed_attempts", event.FailedAttempts),
 	)
 
 	publishErr := w.publisher.Publish(publishCtx, event)
@@ -292,7 +284,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 			slog.String("worker_id", w.workerID),
 			slog.String("event_id", event.ID),
 			slog.String("event_type", event.EventType),
-			slog.Int("attempt_number", attemptNumber),
+			slog.Int("failed_attempts", event.FailedAttempts),
 			slog.Int64("duration_ms", duration.Milliseconds()),
 		)
 
@@ -306,16 +298,15 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 		return ctx.Err()
 	}
 
-	failureReason := classifyPublishFailure(publishCtx, publishErr)
-	failedAttempts := event.Attempts + 1
+	failedAttempts := event.FailedAttempts + 1
 
-	if failedAttempts >= w.maxAttempts {
-		if err := w.store.MarkDeadLetter(ctx, w.workerID, event.ID, failureReason); err != nil {
+	if failedAttempts >= w.maxFailures {
+		if err := w.store.MarkDeadLetter(ctx, w.workerID, event.ID, publishOutcome); err != nil {
 			err = w.handleTransitionError(ctx, event, OperationMarkDeadLetter, err)
 			return fmt.Errorf("mark event %q dead letter: %w", event.ID, err)
 		}
 
-		w.observer.ObserveDeadLetter(event.EventType, failureReason)
+		w.observer.ObserveDeadLetter(event.EventType, publishOutcome)
 
 		w.logger.WarnContext(
 			ctx,
@@ -324,7 +315,7 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 			slog.String("event_id", event.ID),
 			slog.String("event_type", event.EventType),
 			slog.Int("failed_attempts", failedAttempts),
-			slog.String("failure_reason", failureReason),
+			slog.String("failure_reason", string(publishOutcome)),
 			slog.Int64("duration_ms", duration.Milliseconds()),
 		)
 
@@ -333,19 +324,19 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 
 	retryDelay := w.backoff.retryDelay(failedAttempts)
 
-	nextAvailableAt, err := w.store.ScheduleRetry(
+	err := w.store.ScheduleRetry(
 		ctx,
 		w.workerID,
 		event.ID,
 		retryDelay,
-		failureReason,
+		publishOutcome,
 	)
 	if err != nil {
 		err = w.handleTransitionError(ctx, event, OperationScheduleRetry, err)
 		return fmt.Errorf("schedule retry for event %q: %w", event.ID, err)
 	}
 
-	w.observer.ObserveRetry(event.EventType, failureReason)
+	w.observer.ObserveRetry(event.EventType, publishOutcome)
 
 	w.logger.WarnContext(
 		ctx,
@@ -355,27 +346,11 @@ func (w *Worker) processEvent(ctx context.Context, event Event) error {
 		slog.String("event_type", event.EventType),
 		slog.Int("failed_attempts", failedAttempts),
 		slog.Duration("retry_delay", retryDelay),
-		slog.Time("next_available_at", nextAvailableAt),
-		slog.String("failure_reason", failureReason),
+		slog.String("failure_reason", string(publishOutcome)),
 		slog.Int64("duration_ms", duration.Milliseconds()),
 	)
 
 	return nil
-}
-
-func classifyPublishFailure(publishCtx context.Context, err error) string {
-	switch {
-	case errors.Is(publishCtx.Err(), context.DeadlineExceeded):
-		return publishFailureTimeout
-	case errors.Is(err, context.DeadlineExceeded):
-		return publishFailureTimeout
-	case errors.Is(publishCtx.Err(), context.Canceled):
-		return publishFailureCanceled
-	case errors.Is(err, context.Canceled):
-		return publishFailureCanceled
-	default:
-		return publishFailureFailed
-	}
 }
 
 func classifyPublishOutcome(publishCtx context.Context, err error) PublishOutcome {
@@ -383,10 +358,14 @@ func classifyPublishOutcome(publishCtx context.Context, err error) PublishOutcom
 		return PublishOutcomeSuccess
 	}
 
-	switch classifyPublishFailure(publishCtx, err) {
-	case publishFailureTimeout:
+	switch {
+	case errors.Is(publishCtx.Err(), context.DeadlineExceeded):
 		return PublishOutcomeTimeout
-	case publishFailureCanceled:
+	case errors.Is(err, context.DeadlineExceeded):
+		return PublishOutcomeTimeout
+	case errors.Is(publishCtx.Err(), context.Canceled):
+		return PublishOutcomeCanceled
+	case errors.Is(err, context.Canceled):
 		return PublishOutcomeCanceled
 	default:
 		return PublishOutcomeFailed
