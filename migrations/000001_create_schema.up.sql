@@ -10,16 +10,20 @@ CREATE TABLE reward_claims (
     CONSTRAINT reward_claims_player_campaign_reward_uniq UNIQUE (player_id, campaign_id, reward_id)
 );
 
-CREATE TABLE idempotency_keys (
+CREATE TABLE reward_claim_idempotency_keys (
     key_hash bytea PRIMARY KEY,
-    request_hash bytea NOT NULL,
+    player_id text NOT NULL,
+    campaign_id text NOT NULL,
+    reward_id text NOT NULL,
     response_status integer,
     response_body bytea,
     reward_claim_id uuid REFERENCES reward_claims (id) ON DELETE RESTRICT,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT idempotency_keys_key_hash_length_chk CHECK (octet_length(key_hash) = 32),
-    CONSTRAINT idempotency_keys_request_hash_length_chk CHECK (octet_length(request_hash) = 32),
-    CONSTRAINT idempotency_keys_response_shape_chk CHECK (
+    CONSTRAINT reward_claim_idempotency_keys_key_hash_length_chk CHECK (octet_length(key_hash) = 32),
+    CONSTRAINT reward_claim_idempotency_keys_player_id_length_chk CHECK (length(player_id) BETWEEN 1 AND 128),
+    CONSTRAINT reward_claim_idempotency_keys_campaign_id_length_chk CHECK (length(campaign_id) BETWEEN 1 AND 128),
+    CONSTRAINT reward_claim_idempotency_keys_reward_id_length_chk CHECK (length(reward_id) BETWEEN 1 AND 128),
+    CONSTRAINT reward_claim_idempotency_keys_response_shape_chk CHECK (
         CASE
             WHEN response_status IS NULL THEN
                 response_body IS NULL
@@ -38,8 +42,8 @@ CREATE TABLE idempotency_keys (
     )
 );
 
-CREATE INDEX idempotency_keys_stored_response_created_at_idx
-    ON idempotency_keys (created_at)
+CREATE INDEX reward_claim_idempotency_keys_stored_response_created_at_idx
+    ON reward_claim_idempotency_keys (created_at)
     WHERE response_status IS NOT NULL;
 
 CREATE TABLE outbox_events (

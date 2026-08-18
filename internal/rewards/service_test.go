@@ -1,14 +1,13 @@
 package rewards
 
 import (
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
 func TestNewServiceValidatesConstruction(t *testing.T) {
@@ -34,7 +33,7 @@ func TestNewServiceValidatesConstruction(t *testing.T) {
 	}
 }
 
-func TestPrepareCreateClaimNormalizesAndHashesCommand(t *testing.T) {
+func TestPrepareCreateClaimNormalizesCommandAndHashesKey(t *testing.T) {
 	params, err := prepareCreateClaim(CreateClaimCommand{
 		PlayerID:       " player-123 ",
 		CampaignID:     " campaign-123 ",
@@ -45,37 +44,19 @@ func TestPrepareCreateClaimNormalizesAndHashesCommand(t *testing.T) {
 		t.Fatalf("prepareCreateClaim returned error: %v", err)
 	}
 
-	if !validUUID(params.Claim.ID) {
-		t.Fatalf("claim ID = %q, want UUID", params.Claim.ID)
+	if params.PlayerID != "player-123" {
+		t.Fatalf("player ID = %q, want player-123", params.PlayerID)
 	}
-	if params.Claim.PlayerID != "player-123" {
-		t.Fatalf("player ID = %q, want player-123", params.Claim.PlayerID)
+	if params.CampaignID != "campaign-123" {
+		t.Fatalf("campaign ID = %q, want campaign-123", params.CampaignID)
 	}
-	if params.Claim.CampaignID != "campaign-123" {
-		t.Fatalf("campaign ID = %q, want campaign-123", params.Claim.CampaignID)
-	}
-	if params.Claim.RewardID != "reward-123" {
-		t.Fatalf("reward ID = %q, want reward-123", params.Claim.RewardID)
+	if params.RewardID != "reward-123" {
+		t.Fatalf("reward ID = %q, want reward-123", params.RewardID)
 	}
 
-	wantKeyHash, err := idempotency.HashKey("claim-key-123")
-	if err != nil {
-		t.Fatalf("HashKey returned error: %v", err)
-	}
+	wantKeyHash := sha256.Sum256([]byte("claim-key-123"))
 	if params.KeyHash != wantKeyHash {
 		t.Fatalf("key hash = %x, want %x", params.KeyHash, wantKeyHash)
-	}
-
-	wantRequestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
-		PlayerID:   "player-123",
-		CampaignID: "campaign-123",
-		RewardID:   "reward-123",
-	})
-	if err != nil {
-		t.Fatalf("HashRewardClaimRequest returned error: %v", err)
-	}
-	if params.RequestHash != wantRequestHash {
-		t.Fatalf("request hash = %x, want %x", params.RequestHash, wantRequestHash)
 	}
 }
 
@@ -126,6 +107,17 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 			},
 			wantField:   "reward_id",
 			wantMessage: "reward_id is required",
+		},
+		{
+			name: "player_id contains invalid UTF-8",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-\xff",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward-123",
+				IdempotencyKey: "claim-key-123",
+			},
+			wantField:   "player_id",
+			wantMessage: "player_id must be valid UTF-8",
 		},
 		{
 			name: "player_id contains NUL",
@@ -204,12 +196,34 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 			wantMessage: "idempotency key is required",
 		},
 		{
-			name: "invalid idempotency key",
+			name: "idempotency key contains control character",
 			cmd: CreateClaimCommand{
 				PlayerID:       "player-123",
 				CampaignID:     "campaign-123",
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim\nkey",
+			},
+			wantField:   "idempotency_key",
+			wantMessage: "idempotency key is invalid",
+		},
+		{
+			name: "idempotency key contains DEL",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward-123",
+				IdempotencyKey: "claim\x7fkey",
+			},
+			wantField:   "idempotency_key",
+			wantMessage: "idempotency key is invalid",
+		},
+		{
+			name: "idempotency key too long",
+			cmd: CreateClaimCommand{
+				PlayerID:       "player-123",
+				CampaignID:     "campaign-123",
+				RewardID:       "reward-123",
+				IdempotencyKey: strings.Repeat("a", maxIdempotencyKeyLength+1),
 			},
 			wantField:   "idempotency_key",
 			wantMessage: "idempotency key is invalid",
@@ -240,32 +254,27 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 	}
 }
 
-func TestPrepareCreateClaimAcceptsMaximumMultibyteIDLength(t *testing.T) {
+func TestPrepareCreateClaimAcceptsMaximumLengths(t *testing.T) {
 	maxLengthID := strings.Repeat("å", maxIDLength)
+	maxLengthKey := strings.Repeat("k", maxIdempotencyKeyLength)
 
 	params, err := prepareCreateClaim(CreateClaimCommand{
 		PlayerID:       maxLengthID,
 		CampaignID:     maxLengthID,
 		RewardID:       maxLengthID,
-		IdempotencyKey: "claim-key-123",
+		IdempotencyKey: maxLengthKey,
 	})
 	if err != nil {
 		t.Fatalf("prepareCreateClaim returned error: %v", err)
 	}
 
-	if params.Claim.PlayerID != maxLengthID ||
-		params.Claim.CampaignID != maxLengthID ||
-		params.Claim.RewardID != maxLengthID {
+	if params.PlayerID != maxLengthID || params.CampaignID != maxLengthID || params.RewardID != maxLengthID {
 		t.Fatal("prepareCreateClaim changed valid maximum-length identifiers")
 	}
-}
 
-func validCreateClaimCommand() CreateClaimCommand {
-	return CreateClaimCommand{
-		PlayerID:       "player-123",
-		CampaignID:     "campaign-123",
-		RewardID:       "reward-123",
-		IdempotencyKey: "claim-key-123",
+	wantKeyHash := sha256.Sum256([]byte(maxLengthKey))
+	if params.KeyHash != wantKeyHash {
+		t.Fatalf("key hash = %x, want %x", params.KeyHash, wantKeyHash)
 	}
 }
 

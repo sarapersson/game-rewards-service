@@ -10,18 +10,13 @@ const (
 	// maxIDLength matches the database constraints for player, campaign, and reward identifiers.
 	maxIDLength = 128
 
+	maxIdempotencyKeyLength = 255
+
 	claimStatusClaimed = "claimed"
 
 	createClaimStatusCreated  = 201
 	createClaimStatusConflict = 409
 )
-
-type claimToCreate struct {
-	ID         string
-	PlayerID   string
-	CampaignID string
-	RewardID   string
-}
 
 type claim struct {
 	ID         string
@@ -45,7 +40,8 @@ type CreateClaimResult struct {
 }
 
 type createClaimParams struct {
-	Claim       claimToCreate
-	KeyHash     [sha256.Size]byte
-	RequestHash [sha256.Size]byte
+	PlayerID   string
+	CampaignID string
+	RewardID   string
+	KeyHash    [sha256.Size]byte
 }
