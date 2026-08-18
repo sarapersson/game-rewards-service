@@ -19,7 +19,7 @@ The current publisher is simulated. It exists to exercise the worker reliability
 For a valid `POST /v1/reward-claims` request, the service:
 
 1. normalizes and validates the request and `Idempotency-Key`;
-2. hashes the normalized key and accepted request;
+2. hashes the normalized idempotency key;
 3. starts a PostgreSQL transaction;
 4. reserves the idempotency key or loads its stored response;
 5. enforces reward uniqueness with `UNIQUE (player_id, campaign_id, reward_id)`;
@@ -56,7 +56,9 @@ A different idempotency key cannot bypass that invariant. The resulting `409 rew
 
 Replay retention is intentionally separate from request handling. Idempotency records with stored responses become eligible for routine cleanup 24 hours after `created_at`; request handling does not apply an expiry check, so a retained record continues to replay until it is deleted. After cleanup, the stored key-level replay and reuse history is gone and a subsequent request is evaluated against current business state.
 
-The normalized accepted request is serialized using a versioned canonical representation and persisted as its SHA-256 `request_hash`. That fingerprint format is persistent compatibility state: changing its canonicalization or hash semantics across deployments requires deliberate compatibility, rollout, and rollback handling for existing rows.
+The idempotency record stores the normalized `player_id`, `campaign_id`, and `reward_id` directly. Those fields are the request identity used to distinguish a replay from `idempotency_key_reused`; there is no separate canonical request fingerprint.
+
+Stored response status and bytes are immutable replay state after the transaction commits. Replay validates the persisted envelope and that the stored body is still valid UTF-8 JSON, then returns those exact bytes without reinterpreting them through the current response struct. This keeps exact replay independent of later response-shape refactors while PostgreSQL constraints protect the allowed stored-response states.
 
 Raw idempotency keys are not persisted; PostgreSQL stores only their SHA-256 hashes.
 

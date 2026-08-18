@@ -4,6 +4,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
 
@@ -36,29 +36,11 @@ func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 	rewardID := "reward-" + testName
 	idempotencyKey := "claim-key-" + testName
 	body := `{"player_id":"` + playerID + `","campaign_id":"` + campaignID + `","reward_id":"` + rewardID + `"}`
+	keyHash := sha256.Sum256([]byte(idempotencyKey))
 
-	keyHash, err := idempotency.HashKey(idempotencyKey)
-	if err != nil {
-		t.Fatalf("hash idempotency key: %v", err)
-	}
-
-	cleanupHTTPIntegrationRewardClaim(
-		t,
-		pool,
-		keyHash[:],
-		playerID,
-		campaignID,
-		rewardID,
-	)
+	cleanupHTTPIntegrationRewardClaim(t, pool, keyHash[:], playerID, campaignID, rewardID)
 	t.Cleanup(func() {
-		cleanupHTTPIntegrationRewardClaim(
-			t,
-			pool,
-			keyHash[:],
-			playerID,
-			campaignID,
-			rewardID,
-		)
+		cleanupHTTPIntegrationRewardClaim(t, pool, keyHash[:], playerID, campaignID, rewardID)
 	})
 
 	first := performRewardClaimRequest(t, service, idempotencyKey, body)
@@ -70,11 +52,9 @@ func TestRewardClaimsHandlerReplaysClaimWithPostgres(t *testing.T) {
 	if replay.Code != http.StatusCreated {
 		t.Fatalf("replay status = %d, want %d; body = %s", replay.Code, http.StatusCreated, replay.Body.String())
 	}
-
 	if got := replay.Header().Get(headerIdempotentReplayed); got != "true" {
 		t.Fatalf("%s = %q, want true", headerIdempotentReplayed, got)
 	}
-
 	if replay.Body.String() != first.Body.String() {
 		t.Fatalf("replay body = %s, want %s", replay.Body.String(), first.Body.String())
 	}
@@ -93,7 +73,6 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 	if err != nil {
 		t.Fatalf("count reward claims: %v", err)
 	}
-
 	if claimCount != 1 {
 		t.Fatalf("reward claim count = %d, want 1", claimCount)
 	}
@@ -120,7 +99,6 @@ WHERE aggregate_type = $1
 	if err != nil {
 		t.Fatalf("count outbox events: %v", err)
 	}
-
 	if outboxCount != 1 {
 		t.Fatalf("outbox event count = %d, want 1", outboxCount)
 	}
@@ -139,19 +117,7 @@ func TestRewardClaimsHandlerTreatsCommittedIncompleteIdempotencyAsInternal(t *te
 	rewardID := "reward-" + testName
 	idempotencyKey := "claim-key-" + testName
 	body := `{"player_id":"` + playerID + `","campaign_id":"` + campaignID + `","reward_id":"` + rewardID + `"}`
-
-	keyHash, err := idempotency.HashKey(idempotencyKey)
-	if err != nil {
-		t.Fatalf("hash idempotency key: %v", err)
-	}
-	requestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
-		PlayerID:   playerID,
-		CampaignID: campaignID,
-		RewardID:   rewardID,
-	})
-	if err != nil {
-		t.Fatalf("hash reward claim request: %v", err)
-	}
+	keyHash := sha256.Sum256([]byte(idempotencyKey))
 
 	cleanupHTTPIntegrationRewardClaim(t, pool, keyHash[:], playerID, campaignID, rewardID)
 	t.Cleanup(func() {
@@ -161,10 +127,12 @@ func TestRewardClaimsHandlerTreatsCommittedIncompleteIdempotencyAsInternal(t *te
 	_, err = pool.Exec(
 		context.Background(),
 		`
-INSERT INTO idempotency_keys (key_hash, request_hash)
-VALUES ($1, $2)`,
+INSERT INTO reward_claim_idempotency_keys (key_hash, player_id, campaign_id, reward_id)
+VALUES ($1, $2, $3, $4)`,
 		keyHash[:],
-		requestHash[:],
+		playerID,
+		campaignID,
+		rewardID,
 	)
 	if err != nil {
 		t.Fatalf("seed committed incomplete idempotency key: %v", err)
@@ -191,7 +159,6 @@ func performRewardClaimRequest(t *testing.T, service rewardClaimCreator, idempot
 
 	rec := httptest.NewRecorder()
 	testRewardClaimsHandler(service).ServeHTTP(rec, req)
-
 	return rec
 }
 
@@ -207,7 +174,7 @@ func cleanupHTTPIntegrationRewardClaim(
 
 	_, err := pool.Exec(
 		context.Background(),
-		"DELETE FROM idempotency_keys WHERE key_hash = $1",
+		"DELETE FROM reward_claim_idempotency_keys WHERE key_hash = $1",
 		keyHash,
 	)
 	if err != nil {
@@ -265,13 +232,11 @@ func openHTTPIntegrationPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("open postgres pool: %v", err)
 	}
-
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		t.Fatalf("ping postgres: %v", err)
 	}
 
 	t.Cleanup(pool.Close)
-
 	return pool
 }

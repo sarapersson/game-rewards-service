@@ -1,14 +1,9 @@
 package rewards
 
 import (
-	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const (
@@ -32,79 +27,6 @@ type errorResponse struct {
 type errorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-}
-
-func validateStoredCreateClaimResponse(statusCode int, responseBody []byte, requested claimToCreate, linkedClaimID string) error {
-	switch statusCode {
-	case createClaimStatusCreated:
-		var response createClaimResponse
-		if !decodeStrictJSONResponse(responseBody, &response) {
-			return fmt.Errorf("invalid stored reward claim response body: %w", ErrInternal)
-		}
-
-		if linkedClaimID == "" ||
-			response.ClaimID != linkedClaimID ||
-			!validUUID(response.ClaimID) ||
-			response.PlayerID != requested.PlayerID ||
-			response.CampaignID != requested.CampaignID ||
-			response.RewardID != requested.RewardID ||
-			response.Status != claimStatusClaimed {
-			return fmt.Errorf("stored reward claim response does not match request: %w", ErrInternal)
-		}
-
-		if _, err := time.Parse(time.RFC3339Nano, response.ClaimedAt); err != nil {
-			return fmt.Errorf("stored reward claim response has invalid claimed_at: %w", ErrInternal)
-		}
-
-	case createClaimStatusConflict:
-		if linkedClaimID != "" {
-			return fmt.Errorf("stored duplicate reward claim response has claim link: %w", ErrInternal)
-		}
-
-		var response errorResponse
-		if !decodeStrictJSONResponse(responseBody, &response) {
-			return fmt.Errorf("invalid stored duplicate reward claim response body: %w", ErrInternal)
-		}
-
-		if response.Error.Code != duplicateClaimErrorCode || response.Error.Message == "" {
-			return fmt.Errorf("unexpected stored duplicate reward claim response: %w", ErrInternal)
-		}
-
-	default:
-		return fmt.Errorf("unexpected stored reward claim response status %d: %w", statusCode, ErrInternal)
-	}
-
-	return nil
-}
-
-func decodeStrictJSONResponse(body []byte, dst any) bool {
-	if len(body) == 0 || !utf8.Valid(body) {
-		return false
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-
-	if err := decoder.Decode(dst); err != nil {
-		return false
-	}
-
-	var trailing any
-	return decoder.Decode(&trailing) == io.EOF
-}
-
-func validUUID(value string) bool {
-	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
-		return false
-	}
-
-	encoded := strings.ReplaceAll(value, "-", "")
-	if len(encoded) != 32 {
-		return false
-	}
-
-	_, err := hex.DecodeString(encoded)
-	return err == nil
 }
 
 func marshalCreatedClaimResponse(claim claim) ([]byte, error) {

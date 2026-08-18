@@ -150,10 +150,11 @@ unset NORMALIZED_IDEMPOTENCY_KEY
 Use the resulting hex digest to inspect the specific record:
 
 ```sql
-SELECT response_status,
+SELECT player_id, campaign_id, reward_id,
+       response_status,
        reward_claim_id,
        created_at
-FROM idempotency_keys
+FROM reward_claim_idempotency_keys
 WHERE key_hash = decode('<sha256-hex>', 'hex');
 ```
 
@@ -161,9 +162,10 @@ For a broader recent-state view without exposing raw keys:
 
 ```sql
 SELECT encode(key_hash, 'hex') AS key_hash,
+       player_id, campaign_id, reward_id,
        response_status, reward_claim_id,
        created_at
-FROM idempotency_keys
+FROM reward_claim_idempotency_keys
 ORDER BY created_at DESC
 LIMIT 100;
 ```
@@ -186,7 +188,7 @@ Inspect first:
 
 ```sql
 SELECT count(*)
-FROM idempotency_keys
+FROM reward_claim_idempotency_keys
 WHERE response_status IS NOT NULL
   AND created_at < now() - interval '24 hours';
 ```
@@ -196,13 +198,13 @@ Delete in small batches:
 ```sql
 WITH batch AS (
     SELECT key_hash
-    FROM idempotency_keys
+    FROM reward_claim_idempotency_keys
     WHERE response_status IS NOT NULL
       AND created_at < now() - interval '24 hours'
     ORDER BY created_at
     LIMIT 500
 )
-DELETE FROM idempotency_keys AS i
+DELETE FROM reward_claim_idempotency_keys AS i
 USING batch
 WHERE i.key_hash = batch.key_hash;
 ```

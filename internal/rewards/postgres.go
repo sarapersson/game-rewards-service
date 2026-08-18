@@ -1,12 +1,12 @@
 package rewards
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,7 +15,7 @@ import (
 
 var errPostgresQueryTimeout = errors.New("postgres reward claim query timeout")
 
-func (s *Service) createClaim(ctx context.Context, cmd createClaimParams) (CreateClaimResult, error) {
+func (s *Service) createClaim(ctx context.Context, params createClaimParams) (CreateClaimResult, error) {
 	queryCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 
@@ -25,13 +25,13 @@ func (s *Service) createClaim(ctx context.Context, cmd createClaimParams) (Creat
 	}
 	defer s.rollbackTransaction(tx)
 
-	reserved, err := tryReserveIdempotencyKey(queryCtx, tx, cmd)
+	reserved, err := tryReserveIdempotencyKey(queryCtx, tx, params)
 	if err != nil {
 		return CreateClaimResult{}, err
 	}
 
 	if !reserved {
-		result, err := replayIdempotentClaim(queryCtx, tx, cmd)
+		result, err := replayIdempotentClaim(queryCtx, tx, params)
 		if err != nil {
 			return CreateClaimResult{}, err
 		}
@@ -43,12 +43,12 @@ func (s *Service) createClaim(ctx context.Context, cmd createClaimParams) (Creat
 		return result, nil
 	}
 
-	created, inserted, err := tryInsertClaimForIdempotentCreate(queryCtx, tx, cmd.Claim)
+	created, inserted, err := tryInsertClaim(queryCtx, tx, params)
 	if err != nil {
 		return CreateClaimResult{}, err
 	}
 	if !inserted {
-		result, err := completeDuplicateClaim(queryCtx, tx, cmd)
+		result, err := completeDuplicateClaim(queryCtx, tx, params)
 		if err != nil {
 			return CreateClaimResult{}, err
 		}
@@ -60,7 +60,7 @@ func (s *Service) createClaim(ctx context.Context, cmd createClaimParams) (Creat
 		return result, nil
 	}
 
-	result, err := completeCreatedClaim(queryCtx, tx, cmd, created)
+	result, err := completeCreatedClaim(queryCtx, tx, params, created)
 	if err != nil {
 		return CreateClaimResult{}, err
 	}
@@ -84,17 +84,19 @@ func (s *Service) queryContext(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeoutCause(ctx, s.queryTimeout, errPostgresQueryTimeout)
 }
 
-func tryReserveIdempotencyKey(ctx context.Context, tx pgx.Tx, cmd createClaimParams) (bool, error) {
+func tryReserveIdempotencyKey(ctx context.Context, tx pgx.Tx, params createClaimParams) (bool, error) {
 	const query = `
-INSERT INTO idempotency_keys (key_hash, request_hash)
-VALUES ($1, $2)
+INSERT INTO reward_claim_idempotency_keys (key_hash, player_id, campaign_id, reward_id)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (key_hash) DO NOTHING`
 
 	tag, err := tx.Exec(
 		ctx,
 		query,
-		cmd.KeyHash[:],
-		cmd.RequestHash[:],
+		params.KeyHash[:],
+		params.PlayerID,
+		params.CampaignID,
+		params.RewardID,
 	)
 	if err != nil {
 		return false, mapPostgresError(ctx, err)
@@ -103,24 +105,26 @@ ON CONFLICT (key_hash) DO NOTHING`
 	return tag.RowsAffected() == 1, nil
 }
 
-func replayIdempotentClaim(ctx context.Context, tx pgx.Tx, cmd createClaimParams) (CreateClaimResult, error) {
+func replayIdempotentClaim(ctx context.Context, tx pgx.Tx, params createClaimParams) (CreateClaimResult, error) {
 	const query = `
-SELECT request_hash, response_status, response_body, reward_claim_id::text
-FROM idempotency_keys
+SELECT player_id, campaign_id, reward_id, response_status, response_body
+FROM reward_claim_idempotency_keys
 WHERE key_hash = $1`
 
 	var (
-		requestHash    []byte
+		playerID       string
+		campaignID     string
+		rewardID       string
 		responseStatus sql.NullInt64
 		responseBody   []byte
-		rewardClaimID  sql.NullString
 	)
 
-	err := tx.QueryRow(ctx, query, cmd.KeyHash[:]).Scan(
-		&requestHash,
+	err := tx.QueryRow(ctx, query, params.KeyHash[:]).Scan(
+		&playerID,
+		&campaignID,
+		&rewardID,
 		&responseStatus,
 		&responseBody,
-		&rewardClaimID,
 	)
 	if err != nil {
 		return CreateClaimResult{}, mapPostgresError(ctx, err)
@@ -130,28 +134,26 @@ WHERE key_hash = $1`
 		return CreateClaimResult{}, fmt.Errorf("committed idempotency key missing stored response: %w", ErrInternal)
 	}
 
-	if !bytes.Equal(requestHash, cmd.RequestHash[:]) {
+	if playerID != params.PlayerID || campaignID != params.CampaignID || rewardID != params.RewardID {
 		return CreateClaimResult{}, ErrIdempotencyKeyReused
 	}
 
-	result := CreateClaimResult{
-		StatusCode:   int(responseStatus.Int64),
+	statusCode := int(responseStatus.Int64)
+	if statusCode != createClaimStatusCreated && statusCode != createClaimStatusConflict {
+		return CreateClaimResult{}, fmt.Errorf("unexpected stored reward claim response status %d: %w", statusCode, ErrInternal)
+	}
+	if !utf8.Valid(responseBody) || !json.Valid(responseBody) {
+		return CreateClaimResult{}, fmt.Errorf("invalid stored reward claim response body: %w", ErrInternal)
+	}
+
+	return CreateClaimResult{
+		StatusCode:   statusCode,
 		ResponseBody: responseBody,
 		Replayed:     true,
-	}
-	if err := validateStoredCreateClaimResponse(
-		result.StatusCode,
-		result.ResponseBody,
-		cmd.Claim,
-		rewardClaimID.String,
-	); err != nil {
-		return CreateClaimResult{}, err
-	}
-
-	return result, nil
+	}, nil
 }
 
-func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd createClaimParams, claim claim) (CreateClaimResult, error) {
+func completeCreatedClaim(ctx context.Context, tx pgx.Tx, params createClaimParams, claim claim) (CreateClaimResult, error) {
 	body, err := marshalCreatedClaimResponse(claim)
 	if err != nil {
 		return CreateClaimResult{}, err
@@ -161,7 +163,7 @@ func completeCreatedClaim(ctx context.Context, tx pgx.Tx, cmd createClaimParams,
 		return CreateClaimResult{}, err
 	}
 
-	if err := completeIdempotencyKey(ctx, tx, cmd, createClaimStatusCreated, body, claim.ID); err != nil {
+	if err := completeIdempotencyKey(ctx, tx, params, createClaimStatusCreated, body, claim.ID); err != nil {
 		return CreateClaimResult{}, err
 	}
 
@@ -199,13 +201,13 @@ VALUES ($1, $2, $3, $4, $5::jsonb)`
 	return nil
 }
 
-func completeDuplicateClaim(ctx context.Context, tx pgx.Tx, cmd createClaimParams) (CreateClaimResult, error) {
+func completeDuplicateClaim(ctx context.Context, tx pgx.Tx, params createClaimParams) (CreateClaimResult, error) {
 	body, err := marshalDuplicateClaimResponse()
 	if err != nil {
 		return CreateClaimResult{}, err
 	}
 
-	if err := completeIdempotencyKey(ctx, tx, cmd, createClaimStatusConflict, body, ""); err != nil {
+	if err := completeIdempotencyKey(ctx, tx, params, createClaimStatusConflict, body, ""); err != nil {
 		return CreateClaimResult{}, err
 	}
 
@@ -218,18 +220,20 @@ func completeDuplicateClaim(ctx context.Context, tx pgx.Tx, cmd createClaimParam
 func completeIdempotencyKey(
 	ctx context.Context,
 	tx pgx.Tx,
-	cmd createClaimParams,
+	params createClaimParams,
 	statusCode int,
 	responseBody []byte,
 	claimID string,
 ) error {
 	const query = `
-UPDATE idempotency_keys
+UPDATE reward_claim_idempotency_keys
 SET response_status = $2,
     response_body = $3,
     reward_claim_id = NULLIF($4, '')::uuid
 WHERE key_hash = $1
-  AND request_hash = $5
+  AND player_id = $5
+  AND campaign_id = $6
+  AND reward_id = $7
   AND response_status IS NULL
   AND response_body IS NULL
   AND reward_claim_id IS NULL`
@@ -237,11 +241,13 @@ WHERE key_hash = $1
 	tag, err := tx.Exec(
 		ctx,
 		query,
-		cmd.KeyHash[:],
+		params.KeyHash[:],
 		statusCode,
 		responseBody,
 		claimID,
-		cmd.RequestHash[:],
+		params.PlayerID,
+		params.CampaignID,
+		params.RewardID,
 	)
 	if err != nil {
 		return mapPostgresError(ctx, err)
@@ -254,7 +260,7 @@ WHERE key_hash = $1
 	return nil
 }
 
-func tryInsertClaimForIdempotentCreate(ctx context.Context, tx pgx.Tx, candidate claimToCreate) (claim, bool, error) {
+func tryInsertClaim(ctx context.Context, tx pgx.Tx, params createClaimParams) (claim, bool, error) {
 	const query = `
 INSERT INTO reward_claims (id, player_id, campaign_id, reward_id)
 VALUES ($1, $2, $3, $4)
@@ -266,10 +272,10 @@ RETURNING id::text, player_id, campaign_id, reward_id, created_at`
 	err := tx.QueryRow(
 		ctx,
 		query,
-		candidate.ID,
-		candidate.PlayerID,
-		candidate.CampaignID,
-		candidate.RewardID,
+		newUUIDV4(),
+		params.PlayerID,
+		params.CampaignID,
+		params.RewardID,
 	).Scan(
 		&created.ID,
 		&created.PlayerID,

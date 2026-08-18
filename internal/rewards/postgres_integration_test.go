@@ -5,6 +5,7 @@ package rewards
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,8 +18,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
 const (
@@ -36,20 +35,8 @@ func TestCreateClaimPersistenceAllowsSameRewardInDifferentCampaigns(t *testing.T
 	secondCampaignID := "campaign-spring-" + testName
 	rewardID := "reward-" + testName
 
-	first := newIntegrationCreateClaimParams(
-		t,
-		"claim-key-first-"+testName,
-		playerID,
-		firstCampaignID,
-		rewardID,
-	)
-	second := newIntegrationCreateClaimParams(
-		t,
-		"claim-key-second-"+testName,
-		playerID,
-		secondCampaignID,
-		rewardID,
-	)
+	first := newIntegrationCreateClaimParams(t, "claim-key-first-"+testName, playerID, firstCampaignID, rewardID)
+	second := newIntegrationCreateClaimParams(t, "claim-key-second-"+testName, playerID, secondCampaignID, rewardID)
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, firstCampaignID, rewardID, first)
 	cleanupIntegrationCreateClaimData(t, pool, playerID, secondCampaignID, rewardID, second)
@@ -58,7 +45,6 @@ func TestCreateClaimPersistenceAllowsSameRewardInDifferentCampaigns(t *testing.T
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
-
 	if firstResult.StatusCode != createClaimStatusCreated {
 		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
 	}
@@ -67,7 +53,6 @@ func TestCreateClaimPersistenceAllowsSameRewardInDifferentCampaigns(t *testing.T
 	if err != nil {
 		t.Fatalf("second CreateClaim returned error: %v", err)
 	}
-
 	if secondResult.StatusCode != createClaimStatusCreated {
 		t.Fatalf("second status = %d, want %d", secondResult.StatusCode, createClaimStatusCreated)
 	}
@@ -89,7 +74,6 @@ WHERE player_id = $1
 	if err != nil {
 		t.Fatalf("count reward claims: %v", err)
 	}
-
 	if claimCount != 2 {
 		t.Fatalf("reward claim count = %d, want 2", claimCount)
 	}
@@ -145,7 +129,7 @@ func TestCreateClaimPersistencePreservesExpiredCallerDeadline(t *testing.T) {
 	}
 }
 
-func TestCreateClaimPersistenceCompletesIdempotencyKey(t *testing.T) {
+func TestCreateClaimPersistenceStoresRewardSpecificIdempotencyState(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
@@ -161,61 +145,65 @@ func TestCreateClaimPersistenceCompletesIdempotencyKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateClaim returned error: %v", err)
 	}
-
 	if result.StatusCode != createClaimStatusCreated {
 		t.Fatalf("status = %d, want %d", result.StatusCode, createClaimStatusCreated)
 	}
-
 	if result.Replayed {
 		t.Fatal("first CreateClaim call should not be replayed")
 	}
-
 	if len(result.ResponseBody) == 0 {
 		t.Fatal("response body is empty")
 	}
 
 	var (
-		responseStatus int
-		rewardClaimID  string
+		storedPlayerID   string
+		storedCampaignID string
+		storedRewardID   string
+		responseStatus   int
+		responseBody     []byte
+		rewardClaimID    string
 	)
 
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT response_status, reward_claim_id::text
-FROM idempotency_keys
+SELECT player_id, campaign_id, reward_id, response_status, response_body, reward_claim_id::text
+FROM reward_claim_idempotency_keys
 WHERE key_hash = $1`,
 		cmd.KeyHash[:],
-	).Scan(&responseStatus, &rewardClaimID)
+	).Scan(
+		&storedPlayerID,
+		&storedCampaignID,
+		&storedRewardID,
+		&responseStatus,
+		&responseBody,
+		&rewardClaimID,
+	)
 	if err != nil {
 		t.Fatalf("query idempotency key: %v", err)
 	}
 
+	if storedPlayerID != playerID || storedCampaignID != campaignID || storedRewardID != rewardID {
+		t.Fatalf(
+			"stored request identity = (%q, %q, %q), want (%q, %q, %q)",
+			storedPlayerID,
+			storedCampaignID,
+			storedRewardID,
+			playerID,
+			campaignID,
+			rewardID,
+		)
+	}
 	if responseStatus != createClaimStatusCreated {
 		t.Fatalf("response_status = %d, want %d", responseStatus, createClaimStatusCreated)
 	}
-
-	if rewardClaimID != cmd.Claim.ID {
-		t.Fatalf("reward_claim_id = %q, want %q", rewardClaimID, cmd.Claim.ID)
+	if !bytes.Equal(responseBody, result.ResponseBody) {
+		t.Fatalf("stored response body = %s, want %s", responseBody, result.ResponseBody)
 	}
 
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
-
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
+	claimID := rewardClaimIDForIdentity(t, pool, playerID, campaignID, rewardID)
+	if rewardClaimID != claimID {
+		t.Fatalf("reward_claim_id = %q, want %q", rewardClaimID, claimID)
 	}
 }
 
@@ -227,100 +215,139 @@ func TestCreateClaimPersistenceReplaysStoredResponse(t *testing.T) {
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 
-	replay := first
-	replay.Claim.ID = newUUIDV4()
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
-
-	firstResult, err := service.createClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), cmd)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
 
-	replayResult, err := service.createClaim(context.Background(), replay)
+	replayResult, err := service.createClaim(context.Background(), cmd)
 	if err != nil {
 		t.Fatalf("replay CreateClaim returned error: %v", err)
 	}
-
 	if replayResult.StatusCode != firstResult.StatusCode {
 		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, firstResult.StatusCode)
 	}
-
 	if !bytes.Equal(replayResult.ResponseBody, firstResult.ResponseBody) {
 		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, firstResult.ResponseBody)
 	}
-
 	if !replayResult.Replayed {
 		t.Fatal("replay result should be marked replayed")
 	}
 
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("reward claim count = %d, want 1", got)
 	}
-
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
+	if got := countRewardClaimedOutboxEventsForIdentity(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("outbox event count = %d, want 1", got)
 	}
 }
 
-func TestCreateClaimPersistenceRejectsKeyReuseWithDifferentPayload(t *testing.T) {
+func TestCreateClaimPersistenceRejectsKeyReuseWithDifferentRequest(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
-	testName := integrationTestName(t)
-	playerID := "player-" + testName
-	campaignID := "campaign-" + testName
-	rewardID := "reward-" + testName
-	key := "claim-key-" + testName
-	first := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID)
-	mismatch := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID+"-different")
-
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first)
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, mismatch.Claim.RewardID, mismatch)
-
-	_, err := service.createClaim(context.Background(), first)
-	if err != nil {
-		t.Fatalf("first CreateClaim returned error: %v", err)
+	tests := []struct {
+		name           string
+		playerSuffix   string
+		campaignSuffix string
+		rewardSuffix   string
+	}{
+		{
+			name:         "different player ID",
+			playerSuffix: "-different",
+		},
+		{
+			name:           "different campaign ID",
+			campaignSuffix: "-different",
+		},
+		{
+			name:         "different reward ID",
+			rewardSuffix: "-different",
+		},
 	}
 
-	_, err = service.createClaim(context.Background(), mismatch)
-	if !errors.Is(err, ErrIdempotencyKeyReused) {
-		t.Fatalf("CreateClaim error = %v, want %v", err, ErrIdempotencyKeyReused)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testName := integrationTestName(t)
+			playerID := "player-" + testName
+			campaignID := "campaign-" + testName
+			rewardID := "reward-" + testName
+			key := "claim-key-" + testName
 
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2`,
-		playerID,
-		campaignID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
+			first := newIntegrationCreateClaimParams(
+				t,
+				key,
+				playerID,
+				campaignID,
+				rewardID,
+			)
+			mismatch := newIntegrationCreateClaimParams(
+				t,
+				key,
+				playerID+tt.playerSuffix,
+				campaignID+tt.campaignSuffix,
+				rewardID+tt.rewardSuffix,
+			)
 
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
+			cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, mismatch)
+			cleanupIntegrationCreateClaimData(
+				t,
+				pool,
+				mismatch.PlayerID,
+				mismatch.CampaignID,
+				mismatch.RewardID,
+			)
+
+			_, err := service.createClaim(context.Background(), first)
+			if err != nil {
+				t.Fatalf("first CreateClaim returned error: %v", err)
+			}
+
+			_, err = service.createClaim(context.Background(), mismatch)
+			if !errors.Is(err, ErrIdempotencyKeyReused) {
+				t.Fatalf("CreateClaim error = %v, want %v", err, ErrIdempotencyKeyReused)
+			}
+
+			if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 1 {
+				t.Fatalf("original reward claim count = %d, want 1", got)
+			}
+			if got := countRewardClaimedOutboxEventsForIdentity(
+				t,
+				pool,
+				playerID,
+				campaignID,
+				rewardID,
+			); got != 1 {
+				t.Fatalf("original outbox event count = %d, want 1", got)
+			}
+
+			if got := countRewardClaims(
+				t,
+				pool,
+				mismatch.PlayerID,
+				mismatch.CampaignID,
+				mismatch.RewardID,
+			); got != 0 {
+				t.Fatalf("mismatched reward claim count = %d, want 0", got)
+			}
+			if got := countRewardClaimedOutboxEventsForIdentity(
+				t,
+				pool,
+				mismatch.PlayerID,
+				mismatch.CampaignID,
+				mismatch.RewardID,
+			); got != 0 {
+				t.Fatalf("mismatched outbox event count = %d, want 0", got)
+			}
+		})
 	}
 }
 
-func TestCreateClaimPersistenceStoresDuplicateRewardResponse(t *testing.T) {
+func TestCreateClaimPersistenceStoresAndReplaysDuplicateRewardResponse(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
@@ -333,138 +360,78 @@ func TestCreateClaimPersistenceStoresDuplicateRewardResponse(t *testing.T) {
 
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
 
-	_, err := service.createClaim(context.Background(), first)
+	firstResult, err := service.createClaim(context.Background(), first)
 	if err != nil {
 		t.Fatalf("first CreateClaim returned error: %v", err)
 	}
-
-	result, err := service.createClaim(context.Background(), duplicate)
-	if err != nil {
-		t.Fatalf("duplicate CreateClaim returned error: %v", err)
-	}
-
-	if result.StatusCode != createClaimStatusConflict {
-		t.Fatalf("duplicate status = %d, want %d", result.StatusCode, createClaimStatusConflict)
-	}
-
-	if result.Replayed {
-		t.Fatal("first duplicate response should not be replayed")
-	}
-
-	var duplicateBody errorResponse
-	if err := json.Unmarshal(result.ResponseBody, &duplicateBody); err != nil {
-		t.Fatalf("unmarshal duplicate response: %v; body = %s", err, result.ResponseBody)
-	}
-
-	if duplicateBody.Error.Code != duplicateClaimErrorCode {
-		t.Fatalf("duplicate error code = %q, want %q", duplicateBody.Error.Code, duplicateClaimErrorCode)
-	}
-
-	var (
-		responseStatus int
-		responseBody   []byte
-	)
-
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT response_status, response_body
-FROM idempotency_keys
-WHERE key_hash = $1`,
-		duplicate.KeyHash[:],
-	).Scan(&responseStatus, &responseBody)
-	if err != nil {
-		t.Fatalf("query duplicate idempotency key: %v", err)
-	}
-
-	if responseStatus != createClaimStatusConflict {
-		t.Fatalf("duplicate response_status = %d, want %d", responseStatus, createClaimStatusConflict)
-	}
-
-	if !bytes.Equal(responseBody, result.ResponseBody) {
-		t.Fatalf("stored duplicate response body = %s, want %s", responseBody, result.ResponseBody)
-	}
-
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
-
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
-	}
-}
-
-func TestCreateClaimPersistenceReplaysDuplicateRewardResponse(t *testing.T) {
-	pool := openIntegrationPool(t)
-	service := mustNewIntegrationService(t, pool, 2*time.Second)
-
-	testName := integrationTestName(t)
-	playerID := "player-" + testName
-	campaignID := "campaign-" + testName
-	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimParams(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimParams(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
-
-	duplicateReplay := duplicate
-	duplicateReplay.Claim.ID = newUUIDV4()
-
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate, duplicateReplay)
-
-	_, err := service.createClaim(context.Background(), first)
-	if err != nil {
-		t.Fatalf("first CreateClaim returned error: %v", err)
+	if firstResult.StatusCode != createClaimStatusCreated {
+		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
 	}
 
 	duplicateResult, err := service.createClaim(context.Background(), duplicate)
 	if err != nil {
 		t.Fatalf("duplicate CreateClaim returned error: %v", err)
 	}
+	if duplicateResult.StatusCode != createClaimStatusConflict {
+		t.Fatalf("duplicate status = %d, want %d", duplicateResult.StatusCode, createClaimStatusConflict)
+	}
+	if duplicateResult.Replayed {
+		t.Fatal("first duplicate response should not be replayed")
+	}
 
-	replayResult, err := service.createClaim(context.Background(), duplicateReplay)
+	var duplicateBody errorResponse
+	if err := json.Unmarshal(duplicateResult.ResponseBody, &duplicateBody); err != nil {
+		t.Fatalf("unmarshal duplicate response: %v; body = %s", err, duplicateResult.ResponseBody)
+	}
+	if duplicateBody.Error.Code != duplicateClaimErrorCode {
+		t.Fatalf("duplicate error code = %q, want %q", duplicateBody.Error.Code, duplicateClaimErrorCode)
+	}
+
+	replayResult, err := service.createClaim(context.Background(), duplicate)
 	if err != nil {
 		t.Fatalf("duplicate replay CreateClaim returned error: %v", err)
 	}
-
-	if replayResult.StatusCode != duplicateResult.StatusCode {
-		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, duplicateResult.StatusCode)
+	if replayResult.StatusCode != createClaimStatusConflict {
+		t.Fatalf("duplicate replay status = %d, want %d", replayResult.StatusCode, createClaimStatusConflict)
 	}
-
-	if !bytes.Equal(replayResult.ResponseBody, duplicateResult.ResponseBody) {
-		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, duplicateResult.ResponseBody)
-	}
-
 	if !replayResult.Replayed {
-		t.Fatal("duplicate replay result should be marked replayed")
+		t.Fatal("duplicate replay should be marked replayed")
+	}
+	if !bytes.Equal(replayResult.ResponseBody, duplicateResult.ResponseBody) {
+		t.Fatalf("duplicate replay body = %s, want %s", replayResult.ResponseBody, duplicateResult.ResponseBody)
 	}
 
-	var claimCount int
+	var (
+		responseStatus int
+		responseBody   []byte
+		rewardClaimID  sql.NullString
+	)
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
+SELECT response_status, response_body, reward_claim_id::text
+FROM reward_claim_idempotency_keys
+WHERE key_hash = $1`,
+		duplicate.KeyHash[:],
+	).Scan(&responseStatus, &responseBody, &rewardClaimID)
 	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
+		t.Fatalf("query duplicate idempotency key: %v", err)
+	}
+	if responseStatus != createClaimStatusConflict {
+		t.Fatalf("stored duplicate status = %d, want %d", responseStatus, createClaimStatusConflict)
+	}
+	if !bytes.Equal(responseBody, duplicateResult.ResponseBody) {
+		t.Fatalf("stored duplicate body = %s, want %s", responseBody, duplicateResult.ResponseBody)
+	}
+	if rewardClaimID.Valid {
+		t.Fatalf("stored duplicate reward_claim_id = %q, want NULL", rewardClaimID.String)
 	}
 
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("reward claim count = %d, want 1", got)
+	}
+	if got := countRewardClaimedOutboxEventsForIdentity(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("outbox event count = %d, want 1", got)
 	}
 }
 
@@ -472,24 +439,23 @@ func TestCreateClaimPersistencePreventsDuplicateRewardsConcurrently(t *testing.T
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 5*time.Second)
 
+	const attempts = 8
+
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
 
-	const attempts = 8
-
 	cmds := make([]createClaimParams, attempts)
 	for i := range cmds {
 		cmds[i] = newIntegrationCreateClaimParams(
 			t,
-			"claim-key-"+testName+"-"+strconv.Itoa(i),
+			"claim-key-"+strconv.Itoa(i)+"-"+testName,
 			playerID,
 			campaignID,
 			rewardID,
 		)
 	}
-
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
 
 	ready := make(chan struct{}, attempts)
@@ -500,10 +466,8 @@ func TestCreateClaimPersistencePreventsDuplicateRewardsConcurrently(t *testing.T
 	var wg sync.WaitGroup
 	for _, cmd := range cmds {
 		wg.Add(1)
-
-		go func() {
+		go func(cmd createClaimParams) {
 			defer wg.Done()
-
 			ready <- struct{}{}
 			<-start
 
@@ -512,9 +476,8 @@ func TestCreateClaimPersistencePreventsDuplicateRewardsConcurrently(t *testing.T
 				errs <- err
 				return
 			}
-
 			results <- result
-		}()
+		}(cmd)
 	}
 
 	for range attempts {
@@ -529,11 +492,7 @@ func TestCreateClaimPersistencePreventsDuplicateRewardsConcurrently(t *testing.T
 		t.Fatalf("concurrent CreateClaim returned error: %v", err)
 	}
 
-	var (
-		createdCount  int
-		conflictCount int
-	)
-
+	var createdCount, conflictCount int
 	for result := range results {
 		switch result.StatusCode {
 		case createClaimStatusCreated:
@@ -543,121 +502,67 @@ func TestCreateClaimPersistencePreventsDuplicateRewardsConcurrently(t *testing.T
 		default:
 			t.Fatalf("unexpected status = %d; body = %s", result.StatusCode, result.ResponseBody)
 		}
-
 		if result.Replayed {
-			t.Fatal("concurrent CreateClaim with distinct keys should not be replayed")
+			t.Fatal("different-key concurrent request unexpectedly replayed")
 		}
 	}
 
 	if createdCount != 1 {
 		t.Fatalf("created responses = %d, want 1", createdCount)
 	}
-
 	if conflictCount != attempts-1 {
 		t.Fatalf("conflict responses = %d, want %d", conflictCount, attempts-1)
 	}
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("reward claim count = %d, want 1", got)
+	}
+	if got := countRewardClaimedOutboxEventsForIdentity(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("outbox event count = %d, want 1", got)
+	}
 
-	var claimCount int
+	var (
+		totalCount       int
+		incompleteCount  int
+		linkedClaimCount int
+	)
 	err := pool.QueryRow(
 		context.Background(),
 		`
-SELECT count(*)
-FROM reward_claims
+SELECT count(*),
+       count(*) FILTER (WHERE response_status IS NULL OR response_body IS NULL),
+       count(*) FILTER (WHERE reward_claim_id IS NOT NULL)
+FROM reward_claim_idempotency_keys
 WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 		playerID,
 		campaignID,
 		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
-
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
-	}
-
-	claimIDs := make([]string, 0, len(cmds))
-	for _, cmd := range cmds {
-		claimIDs = append(claimIDs, cmd.Claim.ID)
-	}
-
-	outboxCount := countRewardClaimedOutboxEvents(t, pool, claimIDs...)
-	if outboxCount != 1 {
-		t.Fatalf("reward claimed outbox event count = %d, want 1", outboxCount)
-	}
-
-	var (
-		totalCount             int
-		incompleteCount        int
-		createdResponseCount   int
-		conflictResponseCount  int
-		linkedRewardClaimCount int
-	)
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT
-    count(*),
-    count(*) FILTER (WHERE response_status IS NULL),
-    count(*) FILTER (WHERE response_status = $2),
-    count(*) FILTER (WHERE response_status = $3),
-    count(*) FILTER (WHERE reward_claim_id IS NOT NULL)
-FROM idempotency_keys
-WHERE request_hash = $1`,
-		cmds[0].RequestHash[:],
-		createClaimStatusCreated,
-		createClaimStatusConflict,
-	).Scan(
-		&totalCount,
-		&incompleteCount,
-		&createdResponseCount,
-		&conflictResponseCount,
-		&linkedRewardClaimCount,
-	)
+	).Scan(&totalCount, &incompleteCount, &linkedClaimCount)
 	if err != nil {
 		t.Fatalf("query concurrent idempotency records: %v", err)
 	}
-
 	if totalCount != attempts {
 		t.Fatalf("idempotency keys = %d, want %d", totalCount, attempts)
 	}
-
 	if incompleteCount != 0 {
 		t.Fatalf("incomplete idempotency keys = %d, want 0", incompleteCount)
 	}
-
-	if createdResponseCount != 1 {
-		t.Fatalf("stored created responses = %d, want 1", createdResponseCount)
-	}
-
-	if conflictResponseCount != attempts-1 {
-		t.Fatalf("stored conflict responses = %d, want %d", conflictResponseCount, attempts-1)
-	}
-
-	if linkedRewardClaimCount != 1 {
-		t.Fatalf("idempotency keys linked to reward claim = %d, want 1", linkedRewardClaimCount)
+	if linkedClaimCount != 1 {
+		t.Fatalf("idempotency keys linked to reward claim = %d, want 1", linkedClaimCount)
 	}
 }
 
-func TestCreateClaimPersistenceReplaysSameKeySamePayloadConcurrently(t *testing.T) {
+func TestCreateClaimPersistenceReplaysSameKeySameRequestConcurrently(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 5*time.Second)
+
+	const attempts = 8
 
 	testName := integrationTestName(t)
 	playerID := "player-" + testName
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
 	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
-	const attempts = 8
-
-	cmds := make([]createClaimParams, attempts)
-	for i := range cmds {
-		cmds[i] = cmd
-		cmds[i].Claim.ID = newUUIDV4()
-	}
-
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmds...)
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
 	ready := make(chan struct{}, attempts)
 	start := make(chan struct{})
@@ -665,12 +570,10 @@ func TestCreateClaimPersistenceReplaysSameKeySamePayloadConcurrently(t *testing.
 	errs := make(chan error, attempts)
 
 	var wg sync.WaitGroup
-	for _, cmd := range cmds {
+	for range attempts {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
-
 			ready <- struct{}{}
 			<-start
 
@@ -679,7 +582,6 @@ func TestCreateClaimPersistenceReplaysSameKeySamePayloadConcurrently(t *testing.
 				errs <- err
 				return
 			}
-
 			results <- result
 		}()
 	}
@@ -701,23 +603,19 @@ func TestCreateClaimPersistenceReplaysSameKeySamePayloadConcurrently(t *testing.
 		replayedCount int
 		responseBody  []byte
 	)
-
 	for result := range results {
 		if result.StatusCode != createClaimStatusCreated {
 			t.Fatalf("status = %d, want %d; body = %s", result.StatusCode, createClaimStatusCreated, result.ResponseBody)
 		}
-
 		if result.Replayed {
 			replayedCount++
 		} else {
 			createdCount++
 		}
-
 		if responseBody == nil {
 			responseBody = append([]byte(nil), result.ResponseBody...)
 			continue
 		}
-
 		if !bytes.Equal(result.ResponseBody, responseBody) {
 			t.Fatalf("response body = %s, want %s", result.ResponseBody, responseBody)
 		}
@@ -726,77 +624,37 @@ func TestCreateClaimPersistenceReplaysSameKeySamePayloadConcurrently(t *testing.
 	if createdCount != 1 {
 		t.Fatalf("created responses = %d, want 1", createdCount)
 	}
-
 	if replayedCount != attempts-1 {
 		t.Fatalf("replayed responses = %d, want %d", replayedCount, attempts-1)
 	}
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("reward claim count = %d, want 1", got)
+	}
+	if got := countRewardClaimedOutboxEventsForIdentity(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("outbox event count = %d, want 1", got)
+	}
 
-	var claimCount int
+	var idempotencyCount int
 	err := pool.QueryRow(
 		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
-
-	if claimCount != 1 {
-		t.Fatalf("reward claim count = %d, want 1", claimCount)
-	}
-
-	var (
-		responseStatus int
-		storedBody     []byte
-		rewardClaimID  string
-	)
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT response_status, response_body, reward_claim_id::text
-FROM idempotency_keys
-WHERE key_hash = $1`,
+		`SELECT count(*) FROM reward_claim_idempotency_keys WHERE key_hash = $1`,
 		cmd.KeyHash[:],
-	).Scan(&responseStatus, &storedBody, &rewardClaimID)
+	).Scan(&idempotencyCount)
 	if err != nil {
-		t.Fatalf("query idempotency key: %v", err)
+		t.Fatalf("count idempotency keys: %v", err)
 	}
-
-	if responseStatus != createClaimStatusCreated {
-		t.Fatalf("stored response status = %d, want %d", responseStatus, createClaimStatusCreated)
-	}
-
-	if !bytes.Equal(storedBody, responseBody) {
-		t.Fatalf("stored response body = %s, want %s", storedBody, responseBody)
-	}
-
-	if rewardClaimID == "" {
-		t.Fatal("idempotency key is not linked to the created reward claim")
-	}
-
-	claimIDs := make([]string, 0, len(cmds))
-	for _, cmd := range cmds {
-		claimIDs = append(claimIDs, cmd.Claim.ID)
-	}
-
-	outboxCount := countRewardClaimedOutboxEvents(t, pool, claimIDs...)
-	if outboxCount != 1 {
-		t.Fatalf("reward claimed outbox event count = %d, want 1", outboxCount)
+	if idempotencyCount != 1 {
+		t.Fatalf("idempotency key count = %d, want 1", idempotencyCount)
 	}
 }
 
 func TestCreateClaimPersistenceTreatsCommittedIncompleteKeyAsInternal(t *testing.T) {
 	tests := []struct {
-		name              string
-		storedHashDiffers bool
+		name           string
+		storedRewardID func(string) string
 	}{
-		{name: "same request hash"},
-		{name: "different request hash", storedHashDiffers: true},
+		{name: "same request", storedRewardID: func(rewardID string) string { return rewardID }},
+		{name: "different request", storedRewardID: func(rewardID string) string { return rewardID + "-different" }},
 	}
 
 	for _, tt := range tests {
@@ -812,18 +670,15 @@ func TestCreateClaimPersistenceTreatsCommittedIncompleteKeyAsInternal(t *testing
 
 			cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-			storedRequestHash := append([]byte(nil), cmd.RequestHash[:]...)
-			if tt.storedHashDiffers {
-				storedRequestHash[0] ^= 0xff
-			}
-
 			_, err := pool.Exec(
 				context.Background(),
 				`
-INSERT INTO idempotency_keys (key_hash, request_hash)
-VALUES ($1, $2)`,
+INSERT INTO reward_claim_idempotency_keys (key_hash, player_id, campaign_id, reward_id)
+VALUES ($1, $2, $3, $4)`,
 				cmd.KeyHash[:],
-				storedRequestHash,
+				playerID,
+				campaignID,
+				tt.storedRewardID(rewardID),
 			)
 			if err != nil {
 				t.Fatalf("seed committed incomplete idempotency key: %v", err)
@@ -833,30 +688,14 @@ VALUES ($1, $2)`,
 			if !errors.Is(err, ErrInternal) {
 				t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
 			}
-
-			var claimCount int
-			err = pool.QueryRow(
-				context.Background(),
-				`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-				playerID,
-				campaignID,
-				rewardID,
-			).Scan(&claimCount)
-			if err != nil {
-				t.Fatalf("count reward claims: %v", err)
-			}
-
-			if claimCount != 0 {
-				t.Fatalf("reward claim count = %d, want 0", claimCount)
+			if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 0 {
+				t.Fatalf("reward claim count = %d, want 0", got)
 			}
 		})
 	}
 }
 
-func TestIdempotencyKeysResponseShapeConstraintRejectsInvalidRows(t *testing.T) {
+func TestRewardClaimIdempotencyResponseShapeConstraintRejectsInvalidRows(t *testing.T) {
 	pool := openIntegrationPool(t)
 
 	tests := []struct {
@@ -881,15 +720,15 @@ func TestIdempotencyKeysResponseShapeConstraintRejectsInvalidRows(t *testing.T) 
 			campaignID := "campaign-" + testName
 			rewardID := "reward-" + testName
 			cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
 			cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
 			var rewardClaimID any
 			if tt.linkClaim {
+				rewardClaimID = newUUIDV4()
 				_, err := pool.Exec(
 					context.Background(),
 					`INSERT INTO reward_claims (id, player_id, campaign_id, reward_id) VALUES ($1, $2, $3, $4)`,
-					cmd.Claim.ID,
+					rewardClaimID,
 					playerID,
 					campaignID,
 					rewardID,
@@ -897,22 +736,25 @@ func TestIdempotencyKeysResponseShapeConstraintRejectsInvalidRows(t *testing.T) 
 				if err != nil {
 					t.Fatalf("seed reward claim: %v", err)
 				}
-				rewardClaimID = cmd.Claim.ID
 			}
 
 			_, err := pool.Exec(
 				context.Background(),
 				`
-INSERT INTO idempotency_keys (
+INSERT INTO reward_claim_idempotency_keys (
     key_hash,
-    request_hash,
+    player_id,
+    campaign_id,
+    reward_id,
     response_status,
     response_body,
     reward_claim_id
 )
-VALUES ($1, $2, $3, $4, $5)`,
+VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 				cmd.KeyHash[:],
-				cmd.RequestHash[:],
+				playerID,
+				campaignID,
+				rewardID,
 				tt.status,
 				tt.body,
 				rewardClaimID,
@@ -928,14 +770,17 @@ VALUES ($1, $2, $3, $4, $5)`,
 			if pgErr.Code != "23514" {
 				t.Fatalf("PostgreSQL error code = %q, want check_violation (23514)", pgErr.Code)
 			}
-			if pgErr.ConstraintName != "idempotency_keys_response_shape_chk" {
-				t.Fatalf("constraint = %q, want idempotency_keys_response_shape_chk", pgErr.ConstraintName)
+			if pgErr.ConstraintName != "reward_claim_idempotency_keys_response_shape_chk" {
+				t.Fatalf(
+					"constraint = %q, want reward_claim_idempotency_keys_response_shape_chk",
+					pgErr.ConstraintName,
+				)
 			}
 		})
 	}
 }
 
-func TestCreateClaimPersistenceRejectsInvalidStoredReplay(t *testing.T) {
+func TestCreateClaimPersistenceReplaysStoredResponseAsOpaqueBytes(t *testing.T) {
 	pool := openIntegrationPool(t)
 	service := mustNewIntegrationService(t, pool, 2*time.Second)
 
@@ -944,49 +789,87 @@ func TestCreateClaimPersistenceRejectsInvalidStoredReplay(t *testing.T) {
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
 	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
+	storedBody := []byte(`{"error":{"code":"reward_already_claimed","message":"Historical wording","legacy_detail":true}}`)
+	_, err := pool.Exec(
+		context.Background(),
+		`
+INSERT INTO reward_claim_idempotency_keys (
+    key_hash,
+    player_id,
+    campaign_id,
+    reward_id,
+    response_status,
+    response_body
+)
+VALUES ($1, $2, $3, $4, $5, $6)`,
+		cmd.KeyHash[:],
+		playerID,
+		campaignID,
+		rewardID,
+		createClaimStatusConflict,
+		storedBody,
+	)
+	if err != nil {
+		t.Fatalf("seed stored idempotency response: %v", err)
+	}
+
+	result, err := service.createClaim(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("CreateClaim returned error: %v", err)
+	}
+	if result.StatusCode != createClaimStatusConflict {
+		t.Fatalf("status = %d, want %d", result.StatusCode, createClaimStatusConflict)
+	}
+	if !result.Replayed {
+		t.Fatal("stored response should be marked replayed")
+	}
+	if !bytes.Equal(result.ResponseBody, storedBody) {
+		t.Fatalf("response body = %q, want %q", result.ResponseBody, storedBody)
+	}
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 0 {
+		t.Fatalf("reward claim count = %d, want 0", got)
+	}
+}
+
+func TestCreateClaimPersistenceRejectsMalformedStoredResponse(t *testing.T) {
+	pool := openIntegrationPool(t)
+	service := mustNewIntegrationService(t, pool, 2*time.Second)
+
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
 	_, err := pool.Exec(
 		context.Background(),
 		`
-INSERT INTO idempotency_keys (
+INSERT INTO reward_claim_idempotency_keys (
     key_hash,
-    request_hash,
+    player_id,
+    campaign_id,
+    reward_id,
     response_status,
     response_body
 )
-VALUES ($1, $2, $3, $4)`,
+VALUES ($1, $2, $3, $4, $5, $6)`,
 		cmd.KeyHash[:],
-		cmd.RequestHash[:],
+		playerID,
+		campaignID,
+		rewardID,
 		createClaimStatusConflict,
-		[]byte(`{"error":{"code":"idempotency_key_reused","message":"Reward has already been claimed"}}`),
+		[]byte(`{"error":`),
 	)
 	if err != nil {
-		t.Fatalf("seed invalid stored idempotency response: %v", err)
+		t.Fatalf("seed malformed stored response: %v", err)
 	}
 
 	_, err = service.createClaim(context.Background(), cmd)
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
-	}
-
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
-		playerID,
-		campaignID,
-		rewardID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
-	if claimCount != 0 {
-		t.Fatalf("reward claim count = %d, want 0", claimCount)
 	}
 }
 
@@ -999,14 +882,12 @@ func TestCreateClaimPersistenceCreatesRewardClaimedOutboxEvent(t *testing.T) {
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
 	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
 	result, err := service.createClaim(context.Background(), cmd)
 	if err != nil {
 		t.Fatalf("CreateClaim returned error: %v", err)
 	}
-
 	if result.StatusCode != createClaimStatusCreated {
 		t.Fatalf("status = %d, want %d", result.StatusCode, createClaimStatusCreated)
 	}
@@ -1019,16 +900,22 @@ func TestCreateClaimPersistenceCreatesRewardClaimedOutboxEvent(t *testing.T) {
 		status        string
 		payload       []byte
 	)
-
 	err = pool.QueryRow(
 		context.Background(),
 		`
-SELECT id, aggregate_type, aggregate_id, event_type, status, payload
-FROM outbox_events
-WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
+SELECT o.id, o.aggregate_type, o.aggregate_id, o.event_type, o.status, o.payload
+FROM outbox_events AS o
+JOIN reward_claims AS r ON r.id = o.aggregate_id
+WHERE o.aggregate_type = $1
+  AND o.event_type = $2
+  AND r.player_id = $3
+  AND r.campaign_id = $4
+  AND r.reward_id = $5`,
 		outboxAggregateTypeRewardClaim,
-		cmd.Claim.ID,
 		outboxEventTypeRewardClaimed,
+		playerID,
+		campaignID,
+		rewardID,
 	).Scan(&eventID, &aggregateType, &aggregateID, &eventType, &status, &payload)
 	if err != nil {
 		t.Fatalf("query outbox event: %v", err)
@@ -1037,64 +924,47 @@ WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
 	if eventID == "" {
 		t.Fatal("event ID is empty")
 	}
-
 	if aggregateType != outboxAggregateTypeRewardClaim {
 		t.Fatalf("aggregate type = %q, want %q", aggregateType, outboxAggregateTypeRewardClaim)
 	}
-
-	if aggregateID != cmd.Claim.ID {
-		t.Fatalf("aggregate ID = %q, want %q", aggregateID, cmd.Claim.ID)
-	}
-
 	if eventType != outboxEventTypeRewardClaimed {
 		t.Fatalf("event type = %q, want %q", eventType, outboxEventTypeRewardClaimed)
 	}
-
 	if status != outboxStatusPending {
 		t.Fatalf("status = %q, want %q", status, outboxStatusPending)
 	}
 
 	var event rewardClaimedEvent
 	if err := json.Unmarshal(payload, &event); err != nil {
-		t.Fatalf("unmarshal event payload: %v", err)
+		t.Fatalf("unmarshal outbox payload: %v; payload = %s", err, payload)
 	}
-
 	if event.SchemaVersion != rewardClaimedSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", event.SchemaVersion, rewardClaimedSchemaVersion)
 	}
-
 	if event.EventID != eventID {
 		t.Fatalf("payload event ID = %q, want %q", event.EventID, eventID)
 	}
-
 	if event.EventType != outboxEventTypeRewardClaimed {
 		t.Fatalf("payload event type = %q, want %q", event.EventType, outboxEventTypeRewardClaimed)
 	}
-
-	if event.Claim.ClaimID != cmd.Claim.ID {
-		t.Fatalf("payload claim ID = %q, want %q", event.Claim.ClaimID, cmd.Claim.ID)
+	if event.Claim.ClaimID != aggregateID {
+		t.Fatalf("payload claim ID = %q, want aggregate ID %q", event.Claim.ClaimID, aggregateID)
 	}
-
 	if event.Claim.PlayerID != playerID {
 		t.Fatalf("payload player ID = %q, want %q", event.Claim.PlayerID, playerID)
 	}
-
 	if event.Claim.CampaignID != campaignID {
 		t.Fatalf("payload campaign ID = %q, want %q", event.Claim.CampaignID, campaignID)
 	}
-
 	if event.Claim.RewardID != rewardID {
 		t.Fatalf("payload reward ID = %q, want %q", event.Claim.RewardID, rewardID)
 	}
-
 	if event.Claim.Status != claimStatusClaimed {
 		t.Fatalf("payload claim status = %q, want %q", event.Claim.Status, claimStatusClaimed)
 	}
-
 	if event.Claim.ClaimedAt.IsZero() {
 		t.Fatal("payload claimed_at is zero")
 	}
-
 	if event.OccurredAt.IsZero() {
 		t.Fatal("payload occurred_at is zero")
 	}
@@ -1109,77 +979,51 @@ func TestCreateClaimPersistenceRollsBackWhenOutboxInsertFails(t *testing.T) {
 	campaignID := "campaign-" + testName
 	rewardID := "reward-" + testName
 	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
 	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
 
-	runIntegrationCleanup(t, func() error {
+	const constraintName = "test_reject_reward_claimed_insert"
+	removeConstraint := func() error {
 		_, err := pool.Exec(
 			context.Background(),
-			`
-DELETE FROM outbox_events
-WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
-			outboxAggregateTypeRewardClaim,
-			cmd.Claim.ID,
-			outboxEventTypeRewardClaimed,
+			"ALTER TABLE outbox_events DROP CONSTRAINT IF EXISTS "+constraintName,
 		)
-		if err != nil {
-			return fmt.Errorf("delete conflicting outbox event: %w", err)
-		}
-
-		return nil
-	})
-
+		return err
+	}
+	if err := removeConstraint(); err != nil {
+		t.Fatalf("remove stale test constraint: %v", err)
+	}
+	rejectedPlayerID := strings.ReplaceAll(playerID, "'", "''")
 	_, err := pool.Exec(
 		context.Background(),
-		`
-INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, status)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-		newUUIDV4(),
-		outboxAggregateTypeRewardClaim,
-		cmd.Claim.ID,
-		outboxEventTypeRewardClaimed,
-		`{"schema_version":1}`,
-		outboxStatusPending,
+		"ALTER TABLE outbox_events ADD CONSTRAINT "+constraintName+
+			" CHECK ((payload #>> '{claim,player_id}') IS DISTINCT FROM '"+rejectedPlayerID+"') NOT VALID",
 	)
 	if err != nil {
-		t.Fatalf("seed conflicting outbox event: %v", err)
+		t.Fatalf("add test outbox constraint: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := removeConstraint(); err != nil {
+			t.Errorf("remove test outbox constraint: %v", err)
+		}
+	})
 
 	_, err = service.createClaim(context.Background(), cmd)
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("CreateClaim error = %v, want %v", err, ErrInternal)
 	}
-
-	var claimCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM reward_claims
-WHERE id = $1`,
-		cmd.Claim.ID,
-	).Scan(&claimCount)
-	if err != nil {
-		t.Fatalf("count reward claims: %v", err)
-	}
-
-	if claimCount != 0 {
-		t.Fatalf("reward claim count = %d, want 0", claimCount)
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 0 {
+		t.Fatalf("reward claim count = %d, want 0", got)
 	}
 
 	var idempotencyCount int
 	err = pool.QueryRow(
 		context.Background(),
-		`
-SELECT count(*)
-FROM idempotency_keys
-WHERE key_hash = $1`,
+		`SELECT count(*) FROM reward_claim_idempotency_keys WHERE key_hash = $1`,
 		cmd.KeyHash[:],
 	).Scan(&idempotencyCount)
 	if err != nil {
 		t.Fatalf("count idempotency keys: %v", err)
 	}
-
 	if idempotencyCount != 0 {
 		t.Fatalf("idempotency key count = %d, want 0", idempotencyCount)
 	}
@@ -1189,184 +1033,24 @@ WHERE key_hash = $1`,
 		context.Background(),
 		`
 SELECT count(*)
-FROM outbox_events
-WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
+FROM outbox_events AS o
+JOIN reward_claims AS r ON r.id = o.aggregate_id
+WHERE o.aggregate_type = $1
+  AND o.event_type = $2
+  AND r.player_id = $3
+  AND r.campaign_id = $4
+  AND r.reward_id = $5`,
 		outboxAggregateTypeRewardClaim,
-		cmd.Claim.ID,
 		outboxEventTypeRewardClaimed,
+		playerID,
+		campaignID,
+		rewardID,
 	).Scan(&outboxCount)
 	if err != nil {
 		t.Fatalf("count outbox events: %v", err)
 	}
-
-	if outboxCount != 1 {
-		t.Fatalf("outbox event count = %d, want only pre-seeded event", outboxCount)
-	}
-}
-
-func TestCreateClaimPersistenceReplayDoesNotCreateSecondOutboxEvent(t *testing.T) {
-	pool := openIntegrationPool(t)
-	service := mustNewIntegrationService(t, pool, 2*time.Second)
-
-	testName := integrationTestName(t)
-	playerID := "player-" + testName
-	campaignID := "campaign-" + testName
-	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
-
-	replay := first
-	replay.Claim.ID = newUUIDV4()
-
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, replay)
-
-	firstResult, err := service.createClaim(context.Background(), first)
-	if err != nil {
-		t.Fatalf("first CreateClaim returned error: %v", err)
-	}
-
-	replayResult, err := service.createClaim(context.Background(), replay)
-	if err != nil {
-		t.Fatalf("replay CreateClaim returned error: %v", err)
-	}
-
-	if replayResult.StatusCode != firstResult.StatusCode {
-		t.Fatalf("replay status = %d, want %d", replayResult.StatusCode, firstResult.StatusCode)
-	}
-
-	if !bytes.Equal(replayResult.ResponseBody, firstResult.ResponseBody) {
-		t.Fatalf("replay response body = %s, want %s", replayResult.ResponseBody, firstResult.ResponseBody)
-	}
-
-	if !replayResult.Replayed {
-		t.Fatal("replay result should be marked replayed")
-	}
-
-	var outboxCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM outbox_events
-WHERE aggregate_type = $1
-  AND event_type = $2
-  AND aggregate_id IN ($3, $4)`,
-		outboxAggregateTypeRewardClaim,
-		outboxEventTypeRewardClaimed,
-		first.Claim.ID,
-		replay.Claim.ID,
-	).Scan(&outboxCount)
-	if err != nil {
-		t.Fatalf("count outbox events: %v", err)
-	}
-
-	if outboxCount != 1 {
-		t.Fatalf("outbox event count = %d, want 1", outboxCount)
-	}
-}
-
-func TestCreateClaimPersistenceDuplicateRewardDoesNotCreateOutboxEvent(t *testing.T) {
-	pool := openIntegrationPool(t)
-	service := mustNewIntegrationService(t, pool, 2*time.Second)
-
-	testName := integrationTestName(t)
-	playerID := "player-" + testName
-	campaignID := "campaign-" + testName
-	rewardID := "reward-" + testName
-	first := newIntegrationCreateClaimParams(t, "claim-key-first-"+testName, playerID, campaignID, rewardID)
-	duplicate := newIntegrationCreateClaimParams(t, "claim-key-duplicate-"+testName, playerID, campaignID, rewardID)
-
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first, duplicate)
-
-	firstResult, err := service.createClaim(context.Background(), first)
-	if err != nil {
-		t.Fatalf("first CreateClaim returned error: %v", err)
-	}
-
-	if firstResult.StatusCode != createClaimStatusCreated {
-		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
-	}
-
-	duplicateResult, err := service.createClaim(context.Background(), duplicate)
-	if err != nil {
-		t.Fatalf("duplicate CreateClaim returned error: %v", err)
-	}
-
-	if duplicateResult.StatusCode != createClaimStatusConflict {
-		t.Fatalf("duplicate status = %d, want %d", duplicateResult.StatusCode, createClaimStatusConflict)
-	}
-
-	if duplicateResult.Replayed {
-		t.Fatal("first duplicate response should not be replayed")
-	}
-
-	var totalOutboxCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM outbox_events
-WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
-		outboxAggregateTypeRewardClaim,
-		outboxEventTypeRewardClaimed,
-		first.Claim.ID,
-		duplicate.Claim.ID,
-	).Scan(&totalOutboxCount)
-	if err != nil {
-		t.Fatalf("count outbox events: %v", err)
-	}
-
-	if totalOutboxCount != 1 {
-		t.Fatalf("outbox event count = %d, want 1", totalOutboxCount)
-	}
-}
-
-func TestCreateClaimPersistenceKeyMismatchDoesNotCreateOutboxEvent(t *testing.T) {
-	pool := openIntegrationPool(t)
-	service := mustNewIntegrationService(t, pool, 2*time.Second)
-
-	testName := integrationTestName(t)
-	playerID := "player-" + testName
-	campaignID := "campaign-" + testName
-	rewardID := "reward-" + testName
-	key := "claim-key-" + testName
-	first := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID)
-	mismatch := newIntegrationCreateClaimParams(t, key, playerID, campaignID, rewardID+"-different")
-
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, first)
-	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, mismatch.Claim.RewardID, mismatch)
-
-	firstResult, err := service.createClaim(context.Background(), first)
-	if err != nil {
-		t.Fatalf("first CreateClaim returned error: %v", err)
-	}
-
-	if firstResult.StatusCode != createClaimStatusCreated {
-		t.Fatalf("first status = %d, want %d", firstResult.StatusCode, createClaimStatusCreated)
-	}
-
-	_, err = service.createClaim(context.Background(), mismatch)
-	if !errors.Is(err, ErrIdempotencyKeyReused) {
-		t.Fatalf("mismatch CreateClaim error = %v, want %v", err, ErrIdempotencyKeyReused)
-	}
-
-	var outboxCount int
-	err = pool.QueryRow(
-		context.Background(),
-		`
-SELECT count(*)
-FROM outbox_events
-WHERE aggregate_type = $1 AND event_type = $2 AND aggregate_id IN ($3, $4)`,
-		outboxAggregateTypeRewardClaim,
-		outboxEventTypeRewardClaimed,
-		first.Claim.ID,
-		mismatch.Claim.ID,
-	).Scan(&outboxCount)
-	if err != nil {
-		t.Fatalf("count outbox events: %v", err)
-	}
-
-	if outboxCount != 1 {
-		t.Fatalf("outbox event count = %d, want 1", outboxCount)
+	if outboxCount != 0 {
+		t.Fatalf("outbox event count = %d, want 0", outboxCount)
 	}
 }
 
@@ -1387,12 +1071,10 @@ func TestOutboxEventsAreUniquePerAggregateAndEventType(t *testing.T) {
 		if err != nil {
 			return fmt.Errorf("delete outbox events: %w", err)
 		}
-
 		return nil
 	})
 
 	payload := []byte(`{"schema_version":1}`)
-
 	_, err := pool.Exec(
 		context.Background(),
 		`
@@ -1433,7 +1115,6 @@ func mustNewIntegrationService(t *testing.T, pool *pgxpool.Pool, queryTimeout ti
 	if err != nil {
 		t.Fatalf("NewService returned error: %v", err)
 	}
-
 	return service
 }
 
@@ -1453,47 +1134,88 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal("parse postgres pool config: invalid DATABASE_URL")
 	}
 
-	poolConfig.MaxConns = 8
-
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		t.Fatalf("open postgres pool: %v", err)
 	}
-
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		t.Fatalf("ping postgres: %v", err)
 	}
 
 	t.Cleanup(pool.Close)
-
 	return pool
 }
 
-func countRewardClaimedOutboxEvents(t *testing.T, pool *pgxpool.Pool, claimIDs ...string) int {
+func countRewardClaims(t *testing.T, pool *pgxpool.Pool, playerID, campaignID, rewardID string) int {
 	t.Helper()
 
-	total := 0
-	for _, claimID := range claimIDs {
-		var count int
-		err := pool.QueryRow(
-			context.Background(),
-			`
+	var count int
+	err := pool.QueryRow(
+		context.Background(),
+		`
 SELECT count(*)
-FROM outbox_events
-WHERE aggregate_type = $1 AND aggregate_id = $2 AND event_type = $3`,
-			outboxAggregateTypeRewardClaim,
-			claimID,
-			outboxEventTypeRewardClaimed,
-		).Scan(&count)
-		if err != nil {
-			t.Fatalf("count reward claimed outbox events for claim %q: %v", claimID, err)
-		}
-
-		total += count
+FROM reward_claims
+WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
+		playerID,
+		campaignID,
+		rewardID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count reward claims: %v", err)
 	}
+	return count
+}
 
-	return total
+func rewardClaimIDForIdentity(t *testing.T, pool *pgxpool.Pool, playerID, campaignID, rewardID string) string {
+	t.Helper()
+
+	var claimID string
+	err := pool.QueryRow(
+		context.Background(),
+		`
+SELECT id::text
+FROM reward_claims
+WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
+		playerID,
+		campaignID,
+		rewardID,
+	).Scan(&claimID)
+	if err != nil {
+		t.Fatalf("query reward claim ID: %v", err)
+	}
+	return claimID
+}
+
+func countRewardClaimedOutboxEventsForIdentity(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	playerID, campaignID, rewardID string,
+) int {
+	t.Helper()
+
+	var count int
+	err := pool.QueryRow(
+		context.Background(),
+		`
+SELECT count(*)
+FROM outbox_events AS o
+JOIN reward_claims AS r ON r.id = o.aggregate_id
+WHERE o.aggregate_type = $1
+  AND o.event_type = $2
+  AND r.player_id = $3
+  AND r.campaign_id = $4
+  AND r.reward_id = $5`,
+		outboxAggregateTypeRewardClaim,
+		outboxEventTypeRewardClaimed,
+		playerID,
+		campaignID,
+		rewardID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("count reward claimed outbox events: %v", err)
+	}
+	return count
 }
 
 func cleanupIntegrationCreateClaimData(
@@ -1508,25 +1230,11 @@ func cleanupIntegrationCreateClaimData(
 		for _, cmd := range cmds {
 			_, err := pool.Exec(
 				context.Background(),
-				"DELETE FROM idempotency_keys WHERE key_hash = $1",
+				"DELETE FROM reward_claim_idempotency_keys WHERE key_hash = $1",
 				cmd.KeyHash[:],
 			)
 			if err != nil {
 				return fmt.Errorf("delete idempotency key: %w", err)
-			}
-		}
-
-		for _, cmd := range cmds {
-			_, err := pool.Exec(
-				context.Background(),
-				`
-DELETE FROM outbox_events
-WHERE aggregate_type = $1 AND aggregate_id = $2`,
-				outboxAggregateTypeRewardClaim,
-				cmd.Claim.ID,
-			)
-			if err != nil {
-				return fmt.Errorf("delete outbox event by aggregate ID: %w", err)
 			}
 		}
 
@@ -1546,7 +1254,7 @@ WHERE aggregate_type = $1
 			rewardID,
 		)
 		if err != nil {
-			return fmt.Errorf("delete outbox events for reward Claim: %w", err)
+			return fmt.Errorf("delete outbox events for reward claim: %w", err)
 		}
 
 		_, err = pool.Exec(
@@ -1561,7 +1269,6 @@ WHERE player_id = $1 AND campaign_id = $2 AND reward_id = $3`,
 		if err != nil {
 			return fmt.Errorf("delete reward claims: %w", err)
 		}
-
 		return nil
 	})
 }
@@ -1572,7 +1279,6 @@ func runIntegrationCleanup(t *testing.T, cleanup func() error) {
 	if err := cleanup(); err != nil {
 		t.Fatalf("initial integration cleanup: %v", err)
 	}
-
 	t.Cleanup(func() {
 		if err := cleanup(); err != nil {
 			t.Errorf("integration cleanup: %v", err)
@@ -1586,34 +1292,19 @@ func newIntegrationCreateClaimParams(
 ) createClaimParams {
 	t.Helper()
 
-	keyHash, err := idempotency.HashKey(key)
-	if err != nil {
-		t.Fatalf("hash idempotency key: %v", err)
-	}
-
-	requestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
-		PlayerID:   playerID,
-		CampaignID: campaignID,
-		RewardID:   rewardID,
+	params, err := prepareCreateClaim(CreateClaimCommand{
+		PlayerID:       playerID,
+		CampaignID:     campaignID,
+		RewardID:       rewardID,
+		IdempotencyKey: key,
 	})
 	if err != nil {
-		t.Fatalf("hash request: %v", err)
+		t.Fatalf("prepare CreateClaim params: %v", err)
 	}
-
-	return createClaimParams{
-		Claim: claimToCreate{
-			ID:         newUUIDV4(),
-			PlayerID:   playerID,
-			CampaignID: campaignID,
-			RewardID:   rewardID,
-		},
-		KeyHash:     keyHash,
-		RequestHash: requestHash,
-	}
+	return params
 }
 
 func integrationTestName(t *testing.T) string {
 	t.Helper()
-
 	return strings.ReplaceAll(t.Name(), "/", "-")
 }

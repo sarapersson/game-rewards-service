@@ -2,6 +2,7 @@ package rewards
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,8 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sarapersson/game-rewards-service/internal/idempotency"
 )
 
 type Service struct {
@@ -53,32 +52,11 @@ func prepareCreateClaim(cmd CreateClaimCommand) (createClaimParams, error) {
 		return createClaimParams{}, err
 	}
 
-	keyHash, err := idempotency.HashKey(cmd.IdempotencyKey)
-	if err != nil {
-		return createClaimParams{}, ValidationError{
-			Field:   "idempotency_key",
-			Message: "idempotency key is invalid",
-		}
-	}
-
-	requestHash, err := idempotency.HashRewardClaimRequest(idempotency.RewardClaimRequest{
+	return createClaimParams{
 		PlayerID:   cmd.PlayerID,
 		CampaignID: cmd.CampaignID,
 		RewardID:   cmd.RewardID,
-	})
-	if err != nil {
-		return createClaimParams{}, fmt.Errorf("hash reward claim request: %w", ErrInternal)
-	}
-
-	return createClaimParams{
-		Claim: claimToCreate{
-			ID:         newUUIDV4(),
-			PlayerID:   cmd.PlayerID,
-			CampaignID: cmd.CampaignID,
-			RewardID:   cmd.RewardID,
-		},
-		KeyHash:     keyHash,
-		RequestHash: requestHash,
+		KeyHash:    sha256.Sum256([]byte(cmd.IdempotencyKey)),
 	}, nil
 }
 
@@ -95,16 +73,19 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 		return err
 	}
 
-	if cmd.IdempotencyKey == "" {
-		return ValidationError{Field: "idempotency_key", Message: "idempotency key is required"}
-	}
-
-	return nil
+	return validateIdempotencyKey(cmd.IdempotencyKey)
 }
 
 func validateClaimID(field, value string) error {
 	if value == "" {
 		return ValidationError{Field: field, Message: fmt.Sprintf("%s is required", field)}
+	}
+
+	if !utf8.ValidString(value) {
+		return ValidationError{
+			Field:   field,
+			Message: fmt.Sprintf("%s must be valid UTF-8", field),
+		}
 	}
 
 	if strings.ContainsRune(value, '\x00') {
@@ -118,6 +99,24 @@ func validateClaimID(field, value string) error {
 		return ValidationError{
 			Field:   field,
 			Message: fmt.Sprintf("%s must be at most %d characters", field, maxIDLength),
+		}
+	}
+
+	return nil
+}
+
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return ValidationError{Field: "idempotency_key", Message: "idempotency key is required"}
+	}
+
+	if len(key) > maxIdempotencyKeyLength {
+		return ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"}
+	}
+
+	for _, r := range key {
+		if r < 0x20 || r == 0x7f {
+			return ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"}
 		}
 	}
 
