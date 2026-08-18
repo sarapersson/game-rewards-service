@@ -92,15 +92,15 @@ func (m *WorkerMetrics) ObservePublished(eventType string) {
 	}
 }
 
-func (m *WorkerMetrics) ObserveRetry(eventType, failureReason string) {
+func (m *WorkerMetrics) ObserveRetry(eventType string, outcome outbox.PublishOutcome) {
 	if m != nil {
-		m.retries.WithLabelValues(normalizeEventType(eventType), normalizeFailureReason(failureReason)).Inc()
+		m.retries.WithLabelValues(normalizeEventType(eventType), normalizeFailureReason(outcome)).Inc()
 	}
 }
 
-func (m *WorkerMetrics) ObserveDeadLetter(eventType, failureReason string) {
+func (m *WorkerMetrics) ObserveDeadLetter(eventType string, outcome outbox.PublishOutcome) {
 	if m != nil {
-		m.deadLetters.WithLabelValues(normalizeEventType(eventType), normalizeFailureReason(failureReason)).Inc()
+		m.deadLetters.WithLabelValues(normalizeEventType(eventType), normalizeFailureReason(outcome)).Inc()
 	}
 }
 
@@ -141,10 +141,10 @@ func normalizePublishOutcome(outcome outbox.PublishOutcome) string {
 	}
 }
 
-func normalizeFailureReason(reason string) string {
-	switch reason {
-	case "publish_failed", "publish_timeout", "publish_canceled":
-		return reason
+func normalizeFailureReason(outcome outbox.PublishOutcome) string {
+	switch outcome {
+	case outbox.PublishOutcomeFailed, outbox.PublishOutcomeTimeout, outbox.PublishOutcomeCanceled:
+		return string(outcome)
 	default:
 		return "unknown"
 	}

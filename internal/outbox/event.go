@@ -1,17 +1,7 @@
 // Package outbox contains transactional outbox worker primitives.
 package outbox
 
-import (
-	"encoding/json"
-	"time"
-)
-
-const (
-	StatusPending    = "pending"
-	StatusProcessing = "processing"
-	StatusPublished  = "published"
-	StatusDeadLetter = "dead_letter"
-)
+import "encoding/json"
 
 type Event struct {
 	ID            string
@@ -19,8 +9,7 @@ type Event struct {
 	AggregateID   string
 	EventType     string
 	Payload       json.RawMessage
-	Status        string
-	Attempts      int
-	AvailableAt   time.Time
-	CreatedAt     time.Time
+
+	// FailedAttempts is the number of publisher failures already persisted for this event.
+	FailedAttempts int
 }

@@ -162,7 +162,7 @@ components:
       description: |
         Exactly one actual header value is accepted. Surrounding whitespace is
         trimmed before validation and hashing. The normalized value must be
-        non-empty, at most 255 bytes, and contain no ASCII control characters.
+        non-empty, at most 255 bytes, and contain no ASCII control characters, including DEL (`0x7F`).
 
         A comma inside one header value remains part of the key; it is not parsed
         as multiple keys.

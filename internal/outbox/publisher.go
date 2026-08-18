@@ -44,8 +44,7 @@ func (p *loggingPublisher) Publish(ctx context.Context, event Event) error {
 		slog.String("event_type", event.EventType),
 		slog.String("aggregate_type", event.AggregateType),
 		slog.String("aggregate_id", event.AggregateID),
-		slog.Int("attempt_number", event.Attempts+1),
-		slog.Int("failed_attempts", event.Attempts),
+		slog.Int("failed_attempts", event.FailedAttempts),
 	)
 
 	return nil

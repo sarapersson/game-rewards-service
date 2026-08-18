@@ -16,8 +16,8 @@ func TestBackoffPolicyRetryDelay(t *testing.T) {
 		failedAttempts int
 		want           time.Duration
 	}{
-		{name: "negative attempts uses base", failedAttempts: -1, want: time.Second},
-		{name: "zero attempts uses base", failedAttempts: 0, want: time.Second},
+		{name: "negative failed attempts uses base", failedAttempts: -1, want: time.Second},
+		{name: "zero failed attempts uses base", failedAttempts: 0, want: time.Second},
 		{name: "first failed attempt uses base", failedAttempts: 1, want: time.Second},
 		{name: "second failed attempt doubles base", failedAttempts: 2, want: 2 * time.Second},
 		{name: "third failed attempt doubles again", failedAttempts: 3, want: 4 * time.Second},

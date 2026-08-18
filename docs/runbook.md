@@ -56,13 +56,15 @@ Worker failure handling is intentionally split by semantics:
 * lease loss is an expected fencing outcome, recorded in `game_rewards_outbox_lease_losses_total` rather than `operation_errors_total`, and the event is left for normal lease recovery/reclaim;
 * schema, permission, invariant, programming, and other unexpected store failures terminate the worker component and make the process exit non-zero instead of polling forever.
 
-If the worker process exits while PostgreSQL itself is reachable, inspect the bounded `operation`, `error_class`, and `action` fields in the worker failure log together with deployment/schema state rather than assuming a transient database outage. Raw PostgreSQL or network errors should not be present in normal worker logs.
+If the worker process exits while PostgreSQL itself is reachable, inspect the bounded `operation`, `error_class`, and `action` fields in `outbox_worker_iteration_failed` together with deployment/schema state rather than assuming a transient database outage. Raw PostgreSQL or network errors are intentionally omitted from that iteration-failure log; startup failures may still log their underlying error for diagnosis.
 
-When troubleshooting worker configuration, verify that the lease can outlive the publisher call and its final database operation:
+When troubleshooting worker configuration, verify that the lease can outlive the claim database operation, publisher call, and final database operation:
 
 ```text
-OUTBOX_LOCK_TTL > OUTBOX_PUBLISH_TIMEOUT + DB_QUERY_TIMEOUT
+OUTBOX_LOCK_TTL > OUTBOX_PUBLISH_TIMEOUT + 2 * DB_QUERY_TIMEOUT
 ```
+
+This is the minimum normal-path I/O budget, not a guarantee against scheduler stalls or other pauses; lease loss remains an expected fencing outcome.
 
 Inspect outbox state directly when you need database-global information:
 
@@ -72,8 +74,8 @@ FROM outbox_events
 GROUP BY status
 ORDER BY status;
 
-SELECT id, event_type, status, attempts, available_at, locked_by, locked_until,
-       last_error, created_at, updated_at
+SELECT id, event_type, status, failed_attempts, available_at, locked_by, locked_until,
+       last_failure_reason, created_at, updated_at
 FROM outbox_events
 WHERE status IN ('pending', 'processing', 'dead_letter')
 ORDER BY created_at
@@ -97,8 +99,8 @@ SELECT id,
        aggregate_type,
        aggregate_id,
        event_type,
-       attempts,
-       last_error,
+       failed_attempts,
+       last_failure_reason,
        dead_lettered_at
 FROM outbox_events
 WHERE status = 'dead_letter'
@@ -111,7 +113,7 @@ The Prometheus registries intentionally do not expose database-global queue dept
 When investigating repeated publish failures:
 
 1. check `game_rewards_outbox_publish_attempts_total` and retry/dead-letter counters;
-2. inspect controlled `last_error` classifications and worker logs;
+2. inspect controlled `last_failure_reason` classifications (`failed`, `timeout`, or `canceled`) and worker logs;
 3. distinguish publisher failures from durable finalization failures; a publish may succeed even if the later ownership-fenced database update fails;
 4. do not manually mark `processing` rows published or delete them to "unstick" the queue.
 

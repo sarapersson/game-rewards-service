@@ -111,7 +111,7 @@ func run(ctx context.Context) int {
 			PollInterval:   cfg.Outbox.PollInterval,
 			LockTTL:        cfg.Outbox.LockTTL,
 			PublishTimeout: cfg.Outbox.PublishTimeout,
-			MaxAttempts:    cfg.Outbox.MaxAttempts,
+			MaxFailures:    cfg.Outbox.MaxFailures,
 			BaseBackoff:    cfg.Outbox.BaseBackoff,
 			MaxBackoff:     cfg.Outbox.MaxBackoff,
 			Observer:       workerMetrics,
