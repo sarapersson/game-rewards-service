@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/sarapersson/game-rewards-service/internal/config"
+	"github.com/sarapersson/game-rewards-service/internal/health"
 )
 
 func TestNewServerUsesConfiguredSettings(t *testing.T) {
@@ -107,4 +110,39 @@ func TestNewServerWiresRoutesMiddlewareAndMetrics(t *testing.T) {
 	if observer.route != routeMetrics || observer.method != http.MethodGet || observer.status != http.StatusOK {
 		t.Fatalf("unexpected metrics observation: %#v", observer)
 	}
+}
+
+func TestNewServerWiresReadinessChecks(t *testing.T) {
+	server := mustNewTestServer(
+		t,
+		config.HTTPConfig{Addr: ":0"},
+		ServerObservability{},
+		health.Check{
+			Name: "postgres",
+			Check: func(context.Context) error {
+				return errors.New("postgres unavailable")
+			},
+		},
+	)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, routeReadyz, nil)
+	server.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want 503", recorder.Code)
+	}
+}
+
+func TestUnknownRouteReturnsJSONNotFound(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/does-not-exist", nil)
+
+	newTestRouter().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+	assertJSONContentType(t, recorder)
+	assertErrorResponse(t, recorder, errorCodeNotFound, "Not found")
 }

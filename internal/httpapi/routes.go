@@ -3,6 +3,8 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/sarapersson/game-rewards-service/internal/health"
 )
 
 const (
@@ -15,12 +17,12 @@ func newRouter(
 	logger *slog.Logger,
 	rewardClaims rewardClaimCreator,
 	observability ServerObservability,
-	readinessChecks ...ReadinessCheck,
+	readinessChecks ...health.Check,
 ) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc(routeLivez, livezHandler)
-	mux.HandleFunc(routeReadyz, readyzHandler(readinessChecks...))
+	mux.Handle(routeLivez, health.LiveHandler())
+	mux.Handle(routeReadyz, health.ReadyHandler(readinessChecks...))
 	if observability.MetricsHandler != nil {
 		mux.Handle(routeMetrics, observability.MetricsHandler)
 	}
