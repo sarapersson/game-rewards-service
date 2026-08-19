@@ -11,15 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrInvalidDatabaseConfig indicates that the configured database connection
-// string could not be parsed.
-var ErrInvalidDatabaseConfig = errors.New("invalid database configuration")
-
 // OpenPool creates a PostgreSQL connection pool from a connection string.
 func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse database config: %w", ErrInvalidDatabaseConfig)
+		return nil, errors.New("parse database config: invalid database configuration")
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)

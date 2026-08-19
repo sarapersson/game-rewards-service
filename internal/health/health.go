@@ -9,13 +9,12 @@ import (
 )
 
 const (
-	StatusOK       = "ok"
-	StatusReady    = "ready"
-	StatusNotReady = "not_ready"
+	statusOK       = "ok"
+	statusReady    = "ready"
+	statusNotReady = "not_ready"
 )
 
-// Response is returned by the liveness endpoint.
-type Response struct {
+type response struct {
 	Status string `json:"status"`
 }
 
@@ -25,8 +24,7 @@ type Check struct {
 	Check func(context.Context) error
 }
 
-// ReadinessResponse is returned by the readiness endpoint.
-type ReadinessResponse struct {
+type readinessResponse struct {
 	Status string            `json:"status"`
 	Checks map[string]string `json:"checks"`
 }
@@ -48,7 +46,7 @@ func LiveHandler() http.Handler {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, Response{Status: StatusOK})
+		writeJSON(w, http.StatusOK, response{Status: statusOK})
 	})
 }
 
@@ -61,21 +59,21 @@ func ReadyHandler(checks ...Check) http.Handler {
 		}
 
 		statusCode := http.StatusOK
-		status := StatusReady
+		status := statusReady
 		results := make(map[string]string, len(checks))
 
 		for _, check := range checks {
-			checkStatus := StatusOK
+			checkStatus := statusOK
 			if check.Check == nil || check.Check(r.Context()) != nil {
 				checkStatus = "error"
 				statusCode = http.StatusServiceUnavailable
-				status = StatusNotReady
+				status = statusNotReady
 			}
 
 			results[check.Name] = checkStatus
 		}
 
-		writeJSON(w, statusCode, ReadinessResponse{
+		writeJSON(w, statusCode, readinessResponse{
 			Status: status,
 			Checks: results,
 		})

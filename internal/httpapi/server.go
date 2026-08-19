@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sarapersson/game-rewards-service/internal/config"
+	"github.com/sarapersson/game-rewards-service/internal/health"
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
 
@@ -33,7 +34,7 @@ func NewServer(
 	logger *slog.Logger,
 	rewardClaims rewardClaimCreator,
 	observability ServerObservability,
-	readinessChecks ...ReadinessCheck,
+	readinessChecks ...health.Check,
 ) (*http.Server, error) {
 	if logger == nil {
 		return nil, errors.New("http logger is required")

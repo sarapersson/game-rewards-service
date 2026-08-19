@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sarapersson/game-rewards-service/internal/config"
+	"github.com/sarapersson/game-rewards-service/internal/health"
 	"github.com/sarapersson/game-rewards-service/internal/httpapi"
 	"github.com/sarapersson/game-rewards-service/internal/observability"
 	"github.com/sarapersson/game-rewards-service/internal/postgres"
@@ -92,7 +93,7 @@ func run(ctx context.Context) int {
 			RequestObserver:     httpMetrics,
 			RewardClaimObserver: rewardMetrics,
 		},
-		httpapi.ReadinessCheck{
+		health.Check{
 			Name: "postgres",
 			Check: func(ctx context.Context) error {
 				return postgres.Ping(ctx, dbPool, cfg.Database.PingTimeout)
