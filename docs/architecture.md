@@ -66,7 +66,7 @@ Raw idempotency keys are not persisted; PostgreSQL stores only their SHA-256 has
 
 A new claim writes one `RewardClaimed` outbox event in the same transaction as the claim and idempotency response.
 
-`RewardClaimed` schema v1 carries the event envelope and the claim identity plus `claimed_at`. It does not carry a separate claim status because claim existence and the `RewardClaimed` event type already express that state.
+`RewardClaimed` schema v1 carries `schema_version`, `event_id`, `event_type`, `occurred_at`, and a `claim` object containing `claim_id`, `player_id`, `campaign_id`, `reward_id`, and `claimed_at`. It does not carry a separate claim status because claim existence and the `RewardClaimed` event type already express that state.
 
 Reward claim and event timestamps are serialized as RFC 3339 UTC values; PostgreSQL `timestamptz` remains the persistent source of the underlying instant.
 
@@ -116,8 +116,8 @@ Low-level PostgreSQL and network details are not returned to clients or exposed 
 
 The API and worker are separate processes with separate Prometheus registries:
 
-* API: HTTP, reward-claim, and idempotency metrics on `127.0.0.1:8080` for direct local runs;
-* worker: HTTP and outbox metrics on the worker admin listener, `127.0.0.1:8081` for direct local runs.
+* API: HTTP, reward-claim, and idempotency metrics on `127.0.0.1:8080` by default for direct local runs;
+* worker: HTTP and outbox metrics on the worker admin listener, `127.0.0.1:8081` by default for direct local runs.
 
 `/livez` checks process liveness only. `/readyz` checks required runtime readiness: PostgreSQL for the API, and PostgreSQL plus an active worker loop for the worker. A fatal worker store failure stops that loop and triggers process shutdown; transient recognized availability failures do not create sticky readiness state from a single failed iteration.
 

@@ -30,7 +30,7 @@ reward_claims + reward_claim_idempotency_keys + outbox_events
                                |
                                v
                      Publisher boundary
-                     (simulated today)
+                     (simulated in this repository)
 ```
 
 Three mechanisms solve three different problems:
@@ -48,7 +48,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the detailed consistency 
 Requirements:
 
 * Go 1.26.6
-* Docker
+* Docker with Compose
 * Make
 
 Start PostgreSQL, apply migrations, and run the API and worker:
@@ -118,7 +118,7 @@ The three identifiers are trimmed, required, valid UTF-8, limited to 128 Unicode
 
 Idempotency records with stored responses become eligible for routine cleanup 24 hours after creation. The service does not run automatic cleanup; once a record is deleted, its key-level replay and reuse history is no longer available.
 
-Errors use the stable envelope:
+Error responses from `POST /v1/reward-claims` use the stable envelope:
 
 ```json
 {
@@ -135,7 +135,7 @@ The full client-facing contract is documented in [`openapi.yaml`](openapi.yaml).
 
 ## Architecture and reliability
 
-A new claim, its stored idempotency response, and its `RewardClaimed` outbox event commit in one PostgreSQL transaction. The request path does not call external systems.
+A new claim, its stored idempotency response, and its `RewardClaimed` outbox event commit in one PostgreSQL transaction. PostgreSQL is the request transaction's durable boundary; the transaction does not call the publisher or another downstream service.
 
 The worker atomically claims due outbox rows and commits the lease update before publishing. Finalization uses lease ownership checks when marking an event published, scheduling a retry, or dead-lettering it. No database row lock or transaction is held while the publisher runs.
 
