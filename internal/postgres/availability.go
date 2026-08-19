@@ -54,6 +54,11 @@ func isNetworkUnavailableError(err error) bool {
 		return true
 	}
 
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+
 	var operationErr *net.OpError
 	return errors.As(err, &operationErr)
 }
