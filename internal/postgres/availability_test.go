@@ -49,6 +49,12 @@ func TestIsUnavailableTransportFailures(t *testing.T) {
 		{name: "eof", err: io.EOF},
 		{name: "unexpected eof", err: io.ErrUnexpectedEOF},
 		{name: "network timeout", err: &net.DNSError{IsTimeout: true}},
+		{name: "dns resolution", err: fmt.Errorf("resolve postgres: %w", &net.DNSError{
+			Err:        "no such host",
+			Name:       "postgres",
+			Server:     "127.0.0.11:53",
+			IsNotFound: true,
+		})},
 		{
 			name: "network operation",
 			err: &net.OpError{
@@ -77,6 +83,16 @@ func TestIsUnavailableRejectsNonAvailabilityFailures(t *testing.T) {
 		{name: "wrapped context cancellation", err: fmt.Errorf("query failed: %w", context.Canceled)},
 		{name: "raw context deadline", err: context.DeadlineExceeded},
 		{name: "wrapped context deadline", err: fmt.Errorf("query failed: %w", context.DeadlineExceeded)},
+		{name: "dns resolution wrapping context cancellation", err: &net.DNSError{
+			UnwrapErr: context.Canceled,
+			Err:       context.Canceled.Error(),
+			Name:      "postgres",
+		}},
+		{name: "dns resolution wrapping context deadline", err: &net.DNSError{
+			UnwrapErr: context.DeadlineExceeded,
+			Err:       context.DeadlineExceeded.Error(),
+			Name:      "postgres",
+		}},
 		{
 			name: "network operation wrapping context deadline",
 			err: &net.OpError{
