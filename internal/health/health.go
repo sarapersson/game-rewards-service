@@ -1,4 +1,4 @@
-// Package health provides process liveness and dependency readiness handlers.
+// Package health provides process liveness and readiness handlers.
 package health
 
 import (

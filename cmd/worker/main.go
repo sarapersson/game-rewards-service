@@ -164,6 +164,8 @@ func run(ctx context.Context) int {
 		return 0
 	}
 
+	// Keep worker cancellation owned by stopComponents so signal handling and sibling
+	// component failure use the same bounded shutdown path.
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 

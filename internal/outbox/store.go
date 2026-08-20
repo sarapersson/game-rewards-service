@@ -13,6 +13,8 @@ import (
 )
 
 var (
+	// ErrLeaseLost indicates that the worker no longer owns the event's processing
+	// lease for the requested state transition.
 	ErrLeaseLost = errors.New("outbox event lease lost")
 
 	errStoreUnavailable     = errors.New("outbox store unavailable")
@@ -20,6 +22,7 @@ var (
 	errPostgresQueryTimeout = errors.New("postgres outbox query timeout")
 )
 
+// Store persists outbox leasing and ownership-fenced final state transitions.
 type Store interface {
 	ClaimNext(ctx context.Context, workerID string, lockTTL time.Duration) (Event, bool, error)
 	MarkPublished(ctx context.Context, workerID, eventID string) error

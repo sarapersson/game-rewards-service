@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// maxIDLength matches the database constraints for player, campaign, and reward identifiers.
+	// maxIDLength must match the database constraints for player, campaign, and reward identifiers.
 	maxIDLength = 128
 
 	maxIdempotencyKeyLength = 255

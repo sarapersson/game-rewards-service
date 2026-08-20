@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 )
 
+// maxWorkerIDLength must match the outbox_events.locked_by length constraint.
 const maxWorkerIDLength = 128
 
 var errWorkerFatal = errors.New("outbox worker internal failure")
