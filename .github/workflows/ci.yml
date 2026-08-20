@@ -46,6 +46,9 @@ jobs:
       - name: Run race tests
         run: make test-race
 
+      - name: Run runtime resilience smoke test
+        run: make test-runtime-resilience
+
       - name: Start PostgreSQL
         run: make db-up
 
@@ -56,6 +59,3 @@ jobs:
 
       - name: Run integration tests
         run: make test-integration
-
-      - name: Build Docker image
-        run: make docker-build

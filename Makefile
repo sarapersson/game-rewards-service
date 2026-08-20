@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local test-runtime-resilience vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
 
 BIN_DIR := bin
 API_BIN := $(BIN_DIR)/api
@@ -41,12 +41,15 @@ test-integration-local: ## Start PostgreSQL, apply migrations, and run integrati
 	$(MAKE) migrate-up
 	$(MAKE) test-integration
 
+test-runtime-resilience: ## Verify API and worker behavior across PostgreSQL outage and recovery
+	./scripts/runtime-resilience-smoke.sh
+
 vuln: ## Run govulncheck
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 check: fmt-check mod-tidy-check vet test ## Run fast local checks
 
-ci: fmt-check mod-tidy-check vet test test-race vuln ## Run the full local check set
+ci: fmt-check mod-tidy-check vet test test-race vuln ## Run Go checks, race tests, and vulnerability scanning
 
 run: ## Run the API locally
 	go run ./cmd/api
