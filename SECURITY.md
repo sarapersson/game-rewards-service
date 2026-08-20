@@ -31,6 +31,14 @@ The service does **not** implement authentication or authorization, rate limitin
 * GitHub Actions use least-privilege permissions and `persist-credentials: false`; third-party actions are pinned to immutable commit SHAs. Repository workflows run formatting, vet, tests, race tests, migration/integration checks, Docker builds, CodeQL, `govulncheck`, and dependency review.
 * Dependabot is configured for Go modules, GitHub Actions, Dockerfiles, and Docker Compose; pins it does not cover, such as later Dockerfile stages and the syntax frontend, require explicit digest review when upstream versions are refreshed.
 
+## Repository enforcement
+
+`main` is protected by an active GitHub ruleset. Changes require a pull request, resolved review conversations, and an up-to-date branch. The `Checks`, `govulncheck`, and `Dependency Review` checks must pass before merge.
+
+CodeQL results are also enforced: security alerts at `High or higher` and standard alerts at `Errors` block merge. Force pushes and deletion of `main` are blocked. GitHub secret scanning and push protection are enabled.
+
+These controls are repository-level GitHub settings rather than workflow YAML and should be re-verified if the repository's hosting or ownership changes.
+
 ## Logging and sensitive data
 
 Do not log or commit:

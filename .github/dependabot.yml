@@ -19,7 +19,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Go minor and major upgrades must be coordinated with go.mod.
+    # The Docker Go builder version must stay aligned with go.mod's toolchain.
+    # Minor/major updates are ignored; coordinate any allowed version bump with go.mod.
     ignore:
       - dependency-name: "golang"
         update-types:

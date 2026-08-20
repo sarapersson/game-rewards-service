@@ -367,6 +367,8 @@ func getLogLevel(lookup lookupFunc, key string, defaultValue slog.Level) (slog.L
 func validateOutbox(cfg OutboxConfig, queryTimeout time.Duration) error {
 	const leaseBudgetError = "OUTBOX_LOCK_TTL must be greater than OUTBOX_PUBLISH_TIMEOUT plus twice DB_QUERY_TIMEOUT"
 
+	// ClaimNext starts the lease from PostgreSQL's statement time, so the lease budget
+	// must cover that query, the publish attempt, and the final state transition.
 	if cfg.LockTTL <= cfg.PublishTimeout {
 		return fmt.Errorf(leaseBudgetError)
 	}
