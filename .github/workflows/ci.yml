@@ -24,6 +24,7 @@ jobs:
 
     env:
       DATABASE_URL: postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable
+      DOCKER_IMAGE: game-rewards-service:${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -45,6 +46,9 @@ jobs:
 
       - name: Run race tests
         run: make test-race
+
+      - name: Build runtime image
+        run: make docker-build
 
       - name: Run runtime resilience smoke test
         run: make test-runtime-resilience

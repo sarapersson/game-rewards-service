@@ -27,8 +27,8 @@ The service does **not** implement authentication or authorization, rate limitin
 * HTTP, database, publisher, and shutdown operations use explicit timeouts.
 * API shutdown force-closes remaining HTTP connections after the graceful timeout, and reward-claim transaction rollback uses an independent bounded cleanup context.
 * Worker publishing uses leases and ownership-fenced finalization; no database transaction or row lock is held while the publisher executes.
-* Docker runs as a non-root user, and external container images and the Dockerfile frontend are pinned to immutable digests. Direct local listener defaults bind to `127.0.0.1`, and local Compose publishes ports only on `127.0.0.1`.
-* GitHub Actions use least-privilege permissions and `persist-credentials: false`; third-party actions are pinned to immutable commit SHAs. Repository workflows run formatting, vet, tests, race tests, migration/integration checks, Docker builds, CodeQL, `govulncheck`, and dependency review.
+* Docker runs as a non-root numeric user, and external container images and the Dockerfile frontend are pinned to immutable digests. The runtime stage copies its CA bundle from the pinned builder instead of resolving packages during the final image build. Direct local listener defaults bind to `127.0.0.1`, and local Compose publishes ports only on `127.0.0.1`.
+* GitHub Actions use least-privilege permissions and `persist-credentials: false`; third-party actions are pinned to immutable commit SHAs. Repository workflows run formatting, vet, tests, race tests, migration/integration checks, Docker builds, CodeQL, `govulncheck`, and dependency review. Runtime resilience verifies the same prebuilt application image that CI built rather than rebuilding it inside the smoke test.
 * Dependabot is configured for Go modules, GitHub Actions, Dockerfiles, and Docker Compose; pins it does not cover, such as later Dockerfile stages and the syntax frontend, require explicit digest review when upstream versions are refreshed.
 
 ## Repository enforcement
