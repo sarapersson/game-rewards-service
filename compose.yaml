@@ -17,9 +17,8 @@ services:
       - postgres_data:/var/lib/postgresql
 
   api:
-    build:
-      context: .
-    image: game-rewards-service:local
+    image: ${GAME_REWARDS_IMAGE:-game-rewards-service:local}
+    pull_policy: never
     environment:
       APP_ENV: local
       SERVICE_NAME: game-rewards-service
@@ -33,9 +32,8 @@ services:
     stop_grace_period: 15s
 
   worker:
-    build:
-      context: .
-    image: game-rewards-service:local
+    image: ${GAME_REWARDS_IMAGE:-game-rewards-service:local}
+    pull_policy: never
     command: ["/usr/local/bin/worker"]
     environment:
       APP_ENV: local

@@ -1,9 +1,9 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local test-runtime-resilience vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local test-runtime-resilience test-runtime-resilience-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
 
 BIN_DIR := bin
 API_BIN := $(BIN_DIR)/api
 WORKER_BIN := $(BIN_DIR)/worker
-DOCKER_IMAGE := game-rewards-service:local
+DOCKER_IMAGE ?= game-rewards-service:local
 GOVULNCHECK_VERSION := v1.6.0
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
 MIGRATE_VERSION := v4.19.1
@@ -41,8 +41,11 @@ test-integration-local: ## Start PostgreSQL, apply migrations, and run integrati
 	$(MAKE) migrate-up
 	$(MAKE) test-integration
 
-test-runtime-resilience: ## Verify API and worker behavior across PostgreSQL outage and recovery
-	./scripts/runtime-resilience-smoke.sh
+test-runtime-resilience: ## Verify a prebuilt image across PostgreSQL outage and recovery
+	GAME_REWARDS_IMAGE="$(DOCKER_IMAGE)" ./scripts/runtime-resilience-smoke.sh
+
+test-runtime-resilience-local: docker-build ## Build the local image, then run the runtime resilience test
+	$(MAKE) test-runtime-resilience DOCKER_IMAGE="$(DOCKER_IMAGE)"
 
 vuln: ## Run govulncheck
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
@@ -69,9 +72,10 @@ docker-build: ## Build the Docker image
 	docker build --pull -t $(DOCKER_IMAGE) .
 
 stack-up: ## Build and start PostgreSQL, API, and worker
+	$(MAKE) docker-build DOCKER_IMAGE="$(DOCKER_IMAGE)"
 	$(MAKE) db-up
 	$(MAKE) migrate-up
-	docker compose up -d --build --wait api worker
+	GAME_REWARDS_IMAGE="$(DOCKER_IMAGE)" docker compose up -d --no-build --wait api worker
 
 stack-down: ## Stop and remove the local Compose stack
 	docker compose down --remove-orphans

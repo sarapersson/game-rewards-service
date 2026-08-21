@@ -39,16 +39,11 @@ FROM debian:13-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48
 ENV HTTP_ADDR=:8080 \
     WORKER_ADMIN_ADDR=:8081
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    groupadd --system app && \
-    useradd --system --gid app --home-dir /nonexistent --shell /usr/sbin/nologin app
-
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/api /usr/local/bin/api
 COPY --from=build /out/worker /usr/local/bin/worker
 
-USER app
+USER 10001:10001
 
 EXPOSE 8080 8081
 

@@ -17,6 +17,7 @@ readonly RUN_ID="$(date +%s)-$$"
 readonly PLAYER_ID="runtime-smoke-${RUN_ID}"
 readonly REWARD_ID="runtime-smoke-reward"
 readonly TMP_DIR="$(mktemp -d)"
+readonly RUNTIME_IMAGE="${GAME_REWARDS_IMAGE:-}"
 
 smoke_project_owned=false
 
@@ -280,6 +281,25 @@ container_started_at() {
   docker inspect --format '{{.State.StartedAt}}' "${id}"
 }
 
+container_image_id() {
+  local id=$1
+  docker inspect --format '{{.Image}}' "${id}"
+}
+
+assert_container_image() {
+  local service=$1
+  local expected_image_id=$2
+  local id
+  local actual_image_id
+
+  id=$(container_id "${service}")
+  [[ -n "${id}" ]] || fail "${service} container is not running"
+
+  actual_image_id=$(container_image_id "${id}")
+  [[ "${actual_image_id}" == "${expected_image_id}" ]] || \
+    fail "${service} is not running the expected image; expected=${expected_image_id}, actual=${actual_image_id}"
+}
+
 assert_container_unchanged() {
   local service=$1
   local expected_id=$2
@@ -307,6 +327,13 @@ require_command awk
 docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
 docker compose version >/dev/null 2>&1 || fail "Docker Compose is not available"
 
+[[ -n "${RUNTIME_IMAGE}" ]] || fail "GAME_REWARDS_IMAGE must identify a prebuilt runtime image"
+expected_image_id=$(docker image inspect --format '{{.Id}}' "${RUNTIME_IMAGE}" 2>/dev/null) || \
+  fail "prebuilt runtime image not found locally: ${RUNTIME_IMAGE}"
+[[ -n "${expected_image_id}" ]] || fail "could not resolve image id for ${RUNTIME_IMAGE}"
+export GAME_REWARDS_IMAGE="${RUNTIME_IMAGE}"
+log "using prebuilt runtime image ${RUNTIME_IMAGE} (${expected_image_id})"
+
 if [[ -n "$(compose ps -q 2>/dev/null || true)" ]]; then
   fail "smoke-test Compose project ${SMOKE_PROJECT} is already running"
 fi
@@ -315,9 +342,6 @@ compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 if [[ -n "$(repository_compose_containers || true)" ]]; then
   fail "the repository Compose stack is already running; stop it before the runtime resilience test"
 fi
-
-log "building runtime image"
-make docker-build
 
 log "starting isolated PostgreSQL"
 smoke_project_owned=true
@@ -328,6 +352,8 @@ make migrate-up DATABASE_URL="${SMOKE_DATABASE_URL}"
 
 log "starting API and worker from the prebuilt image"
 compose up -d --no-build --wait --wait-timeout "${COMPOSE_WAIT_TIMEOUT_SECONDS}" api worker
+assert_container_image api "${expected_image_id}"
+assert_container_image worker "${expected_image_id}"
 
 wait_for_http_status api-live-baseline http://127.0.0.1:8080/livez 200
 wait_for_http_status api-ready-baseline http://127.0.0.1:8080/readyz 200

@@ -174,12 +174,20 @@ Common commands:
 | `make check`                                      | formatting, module tidiness, vet, unit tests                             |
 | `make ci`                                         | fast checks plus race tests and `govulncheck`                            |
 | `make test-integration-local`                     | start PostgreSQL, migrate, run integration tests                         |
-| `make test-runtime-resilience`                    | build the image and verify PostgreSQL outage/recovery behavior            |
+| `make test-runtime-resilience`                    | verify a prebuilt image across PostgreSQL outage/recovery                  |
+| `make test-runtime-resilience-local`              | build the local image, then run the runtime resilience test                |
 | `make docker-build`                               | build the local container image                                          |
 | `ALLOW_DESTRUCTIVE_DB_RESET=1 make db-reset`     | reset the local Compose database and apply the current schema             |
 | `ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check`     | verify the schema up/down-to-zero/up round-trip on disposable data        |
 
-The runtime-resilience smoke test uses an isolated Compose project and disposable database volume, but it reserves the repository's standard loopback ports. Stop any existing repository stack before running it.
+Container build and runtime verification are deliberately separate. `make test-runtime-resilience` consumes `DOCKER_IMAGE` without rebuilding it; `make test-runtime-resilience-local` is the convenience path that builds first. Override `DOCKER_IMAGE` to build and verify a specifically named artifact, for example:
+
+```bash
+DOCKER_IMAGE=game-rewards-service:test make docker-build
+DOCKER_IMAGE=game-rewards-service:test make test-runtime-resilience
+```
+
+The runtime-resilience smoke test uses an isolated Compose project and disposable database volume, verifies that both API and worker run the requested prebuilt image, and reserves the repository's standard loopback ports. Stop any existing repository stack before running it.
 
 Both destructive database commands require explicit opt-in and are intended only for disposable local data. See [`docs/runbook.md`](docs/runbook.md) for reset and migration procedures.
 
