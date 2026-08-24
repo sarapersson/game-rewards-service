@@ -1,6 +1,62 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:best-practices",
+    "customManagers:makefileVersions",
+    "security:gomodIndirectSecurityUpdates"
+  ],
+  "automerge": false,
+  "dependencyDashboard": true,
+  "ignoreUnstable": true,
+  "vulnerabilityAlerts": {
+    "automerge": false,
+    "vulnerabilityFixStrategy": "highest"
+  },
+  "packageRules": [
+    {
+      "description": "Advance the go directive only for new stable Go release lines",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "allowedVersions": "/^\\d+\\.\\d+\\.0$/",
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Keep Go patch toolchain and Docker builder updates atomic",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["toolchain"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "Go toolchain",
+      "minimumGroupSize": 2
+    },
+    {
+      "description": "Keep Go patch toolchain and Docker builder updates atomic",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["golang"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "Go toolchain",
+      "minimumGroupSize": 2
+    },
+    {
+      "description": "Keep Go release-line updates atomic",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang", "toolchain"],
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": "Go release line",
+      "minimumGroupSize": 3
+    },
+    {
+      "description": "Keep Go release-line updates atomic",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["golang"],
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": "Go release line",
+      "minimumGroupSize": 3
+    },
+    {
+      "description": "Keep Go module metadata tidy after dependency updates",
+      "matchManagers": ["gomod"],
+      "postUpdateOptions": ["gomodTidy"]
+    }
   ]
 }

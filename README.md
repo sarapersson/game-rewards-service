@@ -47,7 +47,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the detailed consistency 
 
 Requirements:
 
-* Go 1.26.6
+* Go version declared by the `toolchain` directive in [`go.mod`](go.mod)
 * Docker with Compose
 * Make
 
