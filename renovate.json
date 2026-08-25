@@ -18,7 +18,6 @@
       "matchManagers": ["gomod"],
       "matchDepNames": ["go"],
       "matchDepTypes": ["golang"],
-      "matchUpdateTypes": ["patch", "minor", "major"],
       "rangeStrategy": "bump",
       "groupName": "Go version",
       "minimumGroupSize": 2
