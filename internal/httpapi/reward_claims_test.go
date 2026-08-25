@@ -262,18 +262,23 @@ func TestRewardClaimsHandlerMapsClaimValidation(t *testing.T) {
 	}{
 		{
 			name:        "required field",
-			err:         rewards.ValidationError{Field: "player_id", Message: "player_id is required"},
+			err:         &rewards.InvalidInputError{Message: "player_id is required"},
 			wantMessage: "player_id is required",
 		},
 		{
 			name:        "invalid identifier",
-			err:         rewards.ValidationError{Field: "reward_id", Message: "reward_id must not contain NUL characters"},
+			err:         &rewards.InvalidInputError{Message: "reward_id must not contain NUL characters"},
 			wantMessage: "reward_id must not contain NUL characters",
 		},
 		{
 			name:        "invalid idempotency key",
-			err:         rewards.ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"},
+			err:         &rewards.InvalidInputError{Message: "idempotency key is invalid"},
 			wantMessage: "idempotency key is invalid",
+		},
+		{
+			name:        "wrapped validation",
+			err:         fmt.Errorf("internal validation context: %w", &rewards.InvalidInputError{Message: "player_id is required"}),
+			wantMessage: "player_id is required",
 		},
 	}
 
@@ -299,6 +304,9 @@ func TestRewardClaimsHandlerMapsClaimValidation(t *testing.T) {
 			}
 			if !strings.Contains(rec.Body.String(), tt.wantMessage) {
 				t.Fatalf("response body = %q, want message %q", rec.Body.String(), tt.wantMessage)
+			}
+			if strings.Contains(rec.Body.String(), "internal validation context") {
+				t.Fatalf("response body exposed validation wrapper context: %s", rec.Body.String())
 			}
 		})
 	}
@@ -474,7 +482,7 @@ func TestRewardClaimsHandlerMapsServiceErrors(t *testing.T) {
 		},
 		{
 			name:       "service validation",
-			err:        rewards.ValidationError{Field: "player_id", Message: "player_id is required"},
+			err:        &rewards.InvalidInputError{Message: "player_id is required"},
 			wantStatus: http.StatusBadRequest,
 			wantCode:   errorCodeInvalidRequest,
 		},
@@ -600,6 +608,30 @@ func TestRewardClaimsHandlerDoesNotExposeServiceErrorDetails(t *testing.T) {
 	}
 }
 
+func TestRewardClaimsHandlerDoesNotLogClaimValidation(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	service := fakeRewardClaimService{err: fmt.Errorf("validate claim: %w", &rewards.InvalidInputError{Message: "player_id is required"})}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		routeRewardClaims,
+		strings.NewReader(`{"player_id":"player-123","campaign_id":"campaign-123","reward_id":"reward-123"}`),
+	)
+	req.Header.Set(headerIdempotencyKey, "claim-key-123")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	rewardClaimsHandler(logger, service, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if strings.Contains(logs.String(), "reward claim request failed") {
+		t.Fatalf("claim validation was logged as a claim failure: %s", logs.String())
+	}
+}
+
 func TestRewardClaimsHandlerLogsSafeInternalError(t *testing.T) {
 	const (
 		requestID       = "request-123"
@@ -689,7 +721,7 @@ func TestRewardClaimsHandlerObservesServiceOutcome(t *testing.T) {
 func TestRewardClaimsHandlerDoesNotObserveClaimValidation(t *testing.T) {
 	observer := &recordingRewardObserver{}
 	service := fakeRewardClaimService{
-		err: rewards.ValidationError{Field: "player_id", Message: "player_id is required"},
+		err: fmt.Errorf("validate claim: %w", &rewards.InvalidInputError{Message: "player_id is required"}),
 	}
 	req := httptest.NewRequest(
 		http.MethodPost,

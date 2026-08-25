@@ -64,7 +64,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		cmd         CreateClaimCommand
-		wantField   string
 		wantMessage string
 	}{
 		{
@@ -74,7 +73,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "player_id",
 			wantMessage: "player_id is required",
 		},
 		{
@@ -85,7 +83,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "player_id",
 			wantMessage: "player_id is required",
 		},
 		{
@@ -95,7 +92,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "campaign_id",
 			wantMessage: "campaign_id is required",
 		},
 		{
@@ -105,7 +101,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				CampaignID:     "campaign-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "reward_id",
 			wantMessage: "reward_id is required",
 		},
 		{
@@ -116,7 +111,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "player_id",
 			wantMessage: "player_id must be valid UTF-8",
 		},
 		{
@@ -127,7 +121,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "player_id",
 			wantMessage: "player_id must not contain NUL characters",
 		},
 		{
@@ -138,7 +131,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "campaign_id",
 			wantMessage: "campaign_id must not contain NUL characters",
 		},
 		{
@@ -149,7 +141,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward\x00one",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "reward_id",
 			wantMessage: "reward_id must not contain NUL characters",
 		},
 		{
@@ -160,7 +151,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "player_id",
 			wantMessage: "player_id must be at most 128 characters",
 		},
 		{
@@ -171,7 +161,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "campaign_id",
 			wantMessage: "campaign_id must be at most 128 characters",
 		},
 		{
@@ -182,7 +171,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       stringOfLength(maxIDLength + 1),
 				IdempotencyKey: "claim-key-123",
 			},
-			wantField:   "reward_id",
 			wantMessage: "reward_id must be at most 128 characters",
 		},
 		{
@@ -192,7 +180,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				CampaignID: "campaign-123",
 				RewardID:   "reward-123",
 			},
-			wantField:   "idempotency_key",
 			wantMessage: "idempotency key is required",
 		},
 		{
@@ -203,7 +190,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim\nkey",
 			},
-			wantField:   "idempotency_key",
 			wantMessage: "idempotency key is invalid",
 		},
 		{
@@ -214,7 +200,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: "claim\x7fkey",
 			},
-			wantField:   "idempotency_key",
 			wantMessage: "idempotency key is invalid",
 		},
 		{
@@ -225,7 +210,6 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 				RewardID:       "reward-123",
 				IdempotencyKey: strings.Repeat("a", maxIdempotencyKeyLength+1),
 			},
-			wantField:   "idempotency_key",
 			wantMessage: "idempotency key is invalid",
 		},
 	}
@@ -236,19 +220,12 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 			if err == nil {
 				t.Fatal("prepareCreateClaim returned nil error, want validation error")
 			}
-			if !IsValidationError(err) {
-				t.Fatalf("prepareCreateClaim error = %v, want validation error", err)
+			var invalidInputErr *InvalidInputError
+			if !errors.As(err, &invalidInputErr) {
+				t.Fatalf("prepareCreateClaim error = %v, want *InvalidInputError", err)
 			}
-
-			var validationErr ValidationError
-			if !errors.As(err, &validationErr) {
-				t.Fatalf("prepareCreateClaim error = %v, want ValidationError", err)
-			}
-			if validationErr.Field != tt.wantField {
-				t.Fatalf("ValidationError.Field = %q, want %q", validationErr.Field, tt.wantField)
-			}
-			if validationErr.Message != tt.wantMessage {
-				t.Fatalf("ValidationError.Message = %q, want %q", validationErr.Message, tt.wantMessage)
+			if invalidInputErr.Message != tt.wantMessage {
+				t.Fatalf("InvalidInputError.Message = %q, want %q", invalidInputErr.Message, tt.wantMessage)
 			}
 		})
 	}
