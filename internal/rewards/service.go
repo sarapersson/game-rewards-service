@@ -78,28 +78,19 @@ func validateCreateClaimCommand(cmd CreateClaimCommand) error {
 
 func validateClaimID(field, value string) error {
 	if value == "" {
-		return ValidationError{Field: field, Message: fmt.Sprintf("%s is required", field)}
+		return &InvalidInputError{Message: fmt.Sprintf("%s is required", field)}
 	}
 
 	if !utf8.ValidString(value) {
-		return ValidationError{
-			Field:   field,
-			Message: fmt.Sprintf("%s must be valid UTF-8", field),
-		}
+		return &InvalidInputError{Message: fmt.Sprintf("%s must be valid UTF-8", field)}
 	}
 
 	if strings.ContainsRune(value, '\x00') {
-		return ValidationError{
-			Field:   field,
-			Message: fmt.Sprintf("%s must not contain NUL characters", field),
-		}
+		return &InvalidInputError{Message: fmt.Sprintf("%s must not contain NUL characters", field)}
 	}
 
 	if utf8.RuneCountInString(value) > maxIDLength {
-		return ValidationError{
-			Field:   field,
-			Message: fmt.Sprintf("%s must be at most %d characters", field, maxIDLength),
-		}
+		return &InvalidInputError{Message: fmt.Sprintf("%s must be at most %d characters", field, maxIDLength)}
 	}
 
 	return nil
@@ -107,16 +98,16 @@ func validateClaimID(field, value string) error {
 
 func validateIdempotencyKey(key string) error {
 	if key == "" {
-		return ValidationError{Field: "idempotency_key", Message: "idempotency key is required"}
+		return &InvalidInputError{Message: "idempotency key is required"}
 	}
 
 	if len(key) > maxIdempotencyKeyLength {
-		return ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"}
+		return &InvalidInputError{Message: "idempotency key is invalid"}
 	}
 
 	for _, r := range key {
 		if r < 0x20 || r == 0x7f {
-			return ValidationError{Field: "idempotency_key", Message: "idempotency key is invalid"}
+			return &InvalidInputError{Message: "idempotency key is invalid"}
 		}
 	}
 

@@ -82,7 +82,8 @@ func rewardClaimsHandler(
 			RewardID:       req.RewardID,
 			IdempotencyKey: idempotencyKey,
 		})
-		if !rewards.IsValidationError(err) && observer != nil {
+		var invalidInputErr *rewards.InvalidInputError
+		if !errors.As(err, &invalidInputErr) && observer != nil {
 			observer.ObserveRewardClaim(result, err)
 		}
 		if err != nil {
@@ -226,7 +227,8 @@ func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
 	case errors.Is(err, rewards.ErrInternal):
 		errorClass = "internal"
 	default:
-		if rewards.IsValidationError(err) ||
+		var invalidInputErr *rewards.InvalidInputError
+		if errors.As(err, &invalidInputErr) ||
 			errors.Is(err, rewards.ErrIdempotencyKeyReused) {
 			return
 		}
@@ -243,11 +245,12 @@ func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
 }
 
 func writeCreateClaimError(w http.ResponseWriter, err error) {
+	var invalidInputErr *rewards.InvalidInputError
 	switch {
 	case errors.Is(err, rewards.ErrIdempotencyKeyReused):
 		writeError(w, http.StatusConflict, errorCodeIdempotencyKeyReused, "Idempotency-Key was reused with a different request payload")
-	case rewards.IsValidationError(err):
-		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, err.Error())
+	case errors.As(err, &invalidInputErr):
+		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, invalidInputErr.Message)
 	case errors.Is(err, rewards.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, errorCodeUnavailable, "Service unavailable")
 	case errors.Is(err, rewards.ErrInternal):

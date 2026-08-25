@@ -8,21 +8,10 @@ var (
 	ErrIdempotencyKeyReused = errors.New("idempotency key reused with different request payload")
 )
 
-type ValidationError struct {
-	Field   string
+type InvalidInputError struct {
 	Message string
 }
 
-func (e ValidationError) Error() string {
+func (e *InvalidInputError) Error() string {
 	return e.Message
-}
-
-func IsValidationError(err error) bool {
-	var value ValidationError
-	if errors.As(err, &value) {
-		return true
-	}
-
-	var pointer *ValidationError
-	return errors.As(err, &pointer)
 }
