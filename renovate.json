@@ -14,44 +14,22 @@
   },
   "packageRules": [
     {
-      "description": "Advance the go directive only for new stable Go release lines",
+      "description": "Keep Go version and Docker builder updates atomic",
       "matchManagers": ["gomod"],
       "matchDepNames": ["go"],
       "matchDepTypes": ["golang"],
-      "allowedVersions": "/^\\d+\\.\\d+\\.0$/",
-      "rangeStrategy": "bump"
-    },
-    {
-      "description": "Keep Go patch toolchain and Docker builder updates atomic",
-      "matchManagers": ["gomod"],
-      "matchDepTypes": ["toolchain"],
-      "matchUpdateTypes": ["patch"],
-      "groupName": "Go toolchain",
+      "matchUpdateTypes": ["patch", "minor", "major"],
+      "rangeStrategy": "bump",
+      "groupName": "Go version",
       "minimumGroupSize": 2
     },
     {
-      "description": "Keep Go patch toolchain and Docker builder updates atomic",
+      "description": "Keep Go version and Docker builder updates atomic",
       "matchManagers": ["dockerfile"],
       "matchPackageNames": ["golang"],
-      "matchUpdateTypes": ["patch"],
-      "groupName": "Go toolchain",
+      "matchUpdateTypes": ["patch", "minor", "major"],
+      "groupName": "Go version",
       "minimumGroupSize": 2
-    },
-    {
-      "description": "Keep Go release-line updates atomic",
-      "matchManagers": ["gomod"],
-      "matchDepTypes": ["golang", "toolchain"],
-      "matchUpdateTypes": ["minor", "major"],
-      "groupName": "Go release line",
-      "minimumGroupSize": 3
-    },
-    {
-      "description": "Keep Go release-line updates atomic",
-      "matchManagers": ["dockerfile"],
-      "matchPackageNames": ["golang"],
-      "matchUpdateTypes": ["minor", "major"],
-      "groupName": "Go release line",
-      "minimumGroupSize": 3
     },
     {
       "description": "Keep Go module metadata tidy after dependency updates",

@@ -7,14 +7,14 @@ ENV GOTOOLCHAIN=local
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN expected="$(sed -n 's/^toolchain //p' go.mod)" && \
+RUN expected="$(awk '$1 == "go" { print "go" $2; exit }' go.mod)" && \
     actual="$(go env GOVERSION)" && \
     if [ -z "$expected" ]; then \
-        echo "go.mod is missing the required toolchain directive" >&2; \
+        echo "go.mod is missing the required go directive" >&2; \
         exit 1; \
     fi && \
     if [ "$actual" != "$expected" ]; then \
-        echo "Go toolchain mismatch: go.mod requires $expected, Docker builder provides $actual" >&2; \
+        echo "Docker Go version mismatch: expected $expected from go.mod, got $actual" >&2; \
         exit 1; \
     fi && \
     go mod download
