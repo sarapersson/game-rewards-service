@@ -17,8 +17,8 @@ func TestInvalidInputError(t *testing.T) {
 func TestInvalidInputErrorCanBeExtractedWhenWrapped(t *testing.T) {
 	err := fmt.Errorf("validate request: %w", &InvalidInputError{Message: "player_id is required"})
 
-	var invalidInputErr *InvalidInputError
-	if !errors.As(err, &invalidInputErr) {
+	invalidInputErr, ok := errors.AsType[*InvalidInputError](err)
+	if !ok {
 		t.Fatalf("wrapped error = %v, want *InvalidInputError", err)
 	}
 	if invalidInputErr.Message != "player_id is required" {

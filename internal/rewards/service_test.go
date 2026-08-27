@@ -220,8 +220,8 @@ func TestPrepareCreateClaimValidation(t *testing.T) {
 			if err == nil {
 				t.Fatal("prepareCreateClaim returned nil error, want validation error")
 			}
-			var invalidInputErr *InvalidInputError
-			if !errors.As(err, &invalidInputErr) {
+			invalidInputErr, ok := errors.AsType[*InvalidInputError](err)
+			if !ok {
 				t.Fatalf("prepareCreateClaim error = %v, want *InvalidInputError", err)
 			}
 			if invalidInputErr.Message != tt.wantMessage {

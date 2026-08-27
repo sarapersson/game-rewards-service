@@ -1329,8 +1329,8 @@ func assertIntegrationCheckViolation(t *testing.T, err error, constraintName str
 		t.Fatal("expected check constraint violation, got nil")
 	}
 
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	if !ok {
 		t.Fatalf("error = %T %v, want PostgreSQL error", err, err)
 	}
 	if pgErr.Code != "23514" {

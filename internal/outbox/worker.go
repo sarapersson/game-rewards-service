@@ -32,8 +32,7 @@ func wrapWorkerOperationError(operation Operation, err error) error {
 }
 
 func workerErrorOperation(err error) string {
-	var operationErr *workerOperationError
-	if errors.As(err, &operationErr) {
+	if operationErr, ok := errors.AsType[*workerOperationError](err); ok {
 		return string(operationErr.operation)
 	}
 
