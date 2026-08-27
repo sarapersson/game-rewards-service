@@ -82,8 +82,7 @@ func rewardClaimsHandler(
 			RewardID:       req.RewardID,
 			IdempotencyKey: idempotencyKey,
 		})
-		var invalidInputErr *rewards.InvalidInputError
-		if !errors.As(err, &invalidInputErr) && observer != nil {
+		if _, ok := errors.AsType[*rewards.InvalidInputError](err); !ok && observer != nil {
 			observer.ObserveRewardClaim(result, err)
 		}
 		if err != nil {
@@ -198,8 +197,7 @@ func decodeCreateRewardClaimRequest(w http.ResponseWriter, r *http.Request) (cre
 }
 
 func writeDecodeError(w http.ResponseWriter, err error) {
-	var maxBytesErr *http.MaxBytesError
-	if errors.As(err, &maxBytesErr) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		writeError(w, http.StatusRequestEntityTooLarge, errorCodeRequestBodyTooLarge, "Request body is too large")
 		return
 	}
@@ -227,8 +225,7 @@ func logCreateClaimError(r *http.Request, logger *slog.Logger, err error) {
 	case errors.Is(err, rewards.ErrInternal):
 		errorClass = "internal"
 	default:
-		var invalidInputErr *rewards.InvalidInputError
-		if errors.As(err, &invalidInputErr) ||
+		if _, ok := errors.AsType[*rewards.InvalidInputError](err); ok ||
 			errors.Is(err, rewards.ErrIdempotencyKeyReused) {
 			return
 		}

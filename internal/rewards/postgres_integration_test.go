@@ -763,8 +763,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 				t.Fatal("insert invalid idempotency response shape succeeded")
 			}
 
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) {
+			pgErr, ok := errors.AsType[*pgconn.PgError](err)
+			if !ok {
 				t.Fatalf("insert invalid idempotency response shape error = %T %v, want PostgreSQL error", err, err)
 			}
 			if pgErr.Code != "23514" {

@@ -26,8 +26,7 @@ const (
 // IsUnavailable reports whether err represents a PostgreSQL or transport
 // availability failure rather than an application, schema, or protocol failure.
 func IsUnavailable(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		return isUnavailableSQLState(pgErr.Code)
 	}
 
@@ -49,18 +48,16 @@ func isNetworkUnavailableError(err error) bool {
 		return true
 	}
 
-	var networkErr net.Error
-	if errors.As(err, &networkErr) && networkErr.Timeout() {
+	if networkErr, ok := errors.AsType[net.Error](err); ok && networkErr.Timeout() {
 		return true
 	}
 
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return true
 	}
 
-	var operationErr *net.OpError
-	return errors.As(err, &operationErr)
+	_, ok := errors.AsType[*net.OpError](err)
+	return ok
 }
 
 func isUnavailableSQLState(code string) bool {
