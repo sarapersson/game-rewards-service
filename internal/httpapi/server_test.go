@@ -38,6 +38,10 @@ func TestNewServerUsesConfiguredSettings(t *testing.T) {
 	if server.IdleTimeout != 4*time.Second {
 		t.Fatalf("expected idle timeout 4s, got %s", server.IdleTimeout)
 	}
+	const wantMaxHeaderBytes = 32 * 1024
+	if server.MaxHeaderBytes != wantMaxHeaderBytes {
+		t.Fatalf("expected max header bytes %d, got %d", wantMaxHeaderBytes, server.MaxHeaderBytes)
+	}
 	if server.Handler == nil {
 		t.Fatal("expected handler to be set")
 	}

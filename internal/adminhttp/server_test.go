@@ -42,6 +42,10 @@ func TestNewServerWiresWorkerAdminEndpoints(t *testing.T) {
 	if server.Addr != ":9191" {
 		t.Fatalf("addr = %q, want :9191", server.Addr)
 	}
+	const wantMaxHeaderBytes = 32 * 1024
+	if server.MaxHeaderBytes != wantMaxHeaderBytes {
+		t.Fatalf("max header bytes = %d, want %d", server.MaxHeaderBytes, wantMaxHeaderBytes)
+	}
 
 	for _, path := range []string{routeLivez, routeReadyz, routeMetrics} {
 		recorder := httptest.NewRecorder()

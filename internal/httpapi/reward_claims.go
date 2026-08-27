@@ -1,16 +1,14 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
@@ -169,31 +167,34 @@ func decodeCreateRewardClaimRequest(w http.ResponseWriter, r *http.Request) (cre
 		return createRewardClaimRequest{}, false
 	}
 
-	if !utf8.Valid(body) {
-		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body must be valid JSON")
+	if isJSONWhitespaceOnly(body) {
+		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body is required")
 		return createRewardClaimRequest{}, false
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-
-	var req createRewardClaimRequest
-	if err := decoder.Decode(&req); err != nil {
+	var req *createRewardClaimRequest
+	if err := json.Unmarshal(body, &req, json.RejectUnknownMembers(true)); err != nil {
 		writeDecodeError(w, err)
 		return createRewardClaimRequest{}, false
 	}
-
-	var extra json.RawMessage
-	switch err := decoder.Decode(&extra); {
-	case errors.Is(err, io.EOF):
-		return req, true
-	case err == nil:
-		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body must contain a single JSON object")
-		return createRewardClaimRequest{}, false
-	default:
-		writeDecodeError(w, err)
+	if req == nil {
+		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body must contain a JSON object")
 		return createRewardClaimRequest{}, false
 	}
+
+	return *req, true
+}
+
+func isJSONWhitespaceOnly(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+		default:
+			return false
+		}
+	}
+
+	return true
 }
 
 func writeDecodeError(w http.ResponseWriter, err error) {
@@ -202,12 +203,7 @@ func writeDecodeError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	if errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, errorCodeInvalidJSON, "Request body is required")
-		return
-	}
-
-	if strings.HasPrefix(err.Error(), "json: unknown field ") {
+	if semanticErr, ok := errors.AsType[*json.SemanticError](err); ok && semanticErr.Err == json.ErrUnknownName {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "Request body contains an unknown field")
 		return
 	}

@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	routeLivez   = "/livez"
-	routeReadyz  = "/readyz"
-	routeMetrics = "/metrics"
+	routeLivez            = "/livez"
+	routeReadyz           = "/readyz"
+	routeMetrics          = "/metrics"
+	maxRequestHeaderBytes = 32 * 1024
 )
 
 type RequestObserver interface {
@@ -72,6 +73,7 @@ func NewServer(
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    maxRequestHeaderBytes,
 	}
 }
 
