@@ -11,6 +11,8 @@ import (
 	"github.com/sarapersson/game-rewards-service/internal/rewards"
 )
 
+const maxRequestHeaderBytes = 32 * 1024
+
 // RequestObserver records bounded HTTP request outcomes.
 type RequestObserver interface {
 	ObserveRequest(route, method string, status int, duration time.Duration)
@@ -50,5 +52,6 @@ func NewServer(
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    maxRequestHeaderBytes,
 	}, nil
 }

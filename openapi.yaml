@@ -35,10 +35,11 @@ paths:
       requestBody:
         required: true
         description: |
-          A single UTF-8 JSON object, limited to 64 KiB. Invalid UTF-8, unknown
-          fields, and additional JSON values are rejected. `Content-Type` must parse as
-          `application/json`; media-type parameters such as `charset=utf-8` are
-          accepted.
+          A single UTF-8 JSON object, limited to 64 KiB. Property names are
+          case-sensitive and object member names must be unique. Invalid UTF-8, unknown
+          fields, duplicate member names, and additional JSON values are rejected.
+          `Content-Type` must parse as `application/json`; media-type parameters such as
+          `charset=utf-8` are accepted.
         content:
           application/json:
             schema:
@@ -123,6 +124,12 @@ paths:
                 error:
                   code: unsupported_media_type
                   message: Content-Type must be application/json
+
+        '431':
+          description: |
+            The request line and headers exceed the server's 32 KiB parsing budget.
+            This transport-level rejection occurs before application middleware runs,
+            so the application JSON error envelope and X-Request-ID are not guaranteed.
 
         '500':
           description: Unexpected internal, schema, invariant, or programming failure.
