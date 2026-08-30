@@ -19,7 +19,7 @@ concurrency:
 jobs:
   checks:
     name: Checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
 
     env:
@@ -48,7 +48,7 @@ jobs:
         run: make test-race
 
       - name: Build runtime image
-        run: make docker-build
+        run: make docker-build-arm64
 
       - name: Run runtime resilience smoke test
         run: make test-runtime-resilience
