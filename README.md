@@ -176,11 +176,12 @@ Common commands:
 | `make test-integration-local`                     | start PostgreSQL, migrate, run integration tests                         |
 | `make test-runtime-resilience`                    | verify a prebuilt image across PostgreSQL outage/recovery                  |
 | `make test-runtime-resilience-local`              | build the local image, then run the runtime resilience test                |
-| `make docker-build`                               | build the local container image                                          |
+| `make docker-build`                               | build the local container image for the current Docker platform           |
+| `make docker-build-arm64`                         | build the `linux/arm64` deployment container image                        |
 | `ALLOW_DESTRUCTIVE_DB_RESET=1 make db-reset`     | reset the local Compose database and apply the current schema             |
 | `ALLOW_DESTRUCTIVE_DB_CHECK=1 make db-check`     | verify the schema up/down-to-zero/up round-trip on disposable data        |
 
-Container build and runtime verification are deliberately separate. `make test-runtime-resilience` consumes `DOCKER_IMAGE` without rebuilding it; `make test-runtime-resilience-local` is the convenience path that builds first. Override `DOCKER_IMAGE` to build and verify a specifically named artifact, for example:
+Container build and runtime verification are deliberately separate. `make test-runtime-resilience` consumes `DOCKER_IMAGE` without rebuilding it; `make test-runtime-resilience-local` is the convenience path that builds first. The deployment container target is `linux/arm64`: `make docker-build` keeps local development native to the current Docker platform, while `make docker-build-arm64` builds the deployment artifact explicitly. CI builds and runtime-verifies that ARM64 deployment image. Override `DOCKER_IMAGE` to build and verify a specifically named artifact, for example:
 
 ```bash
 DOCKER_IMAGE=game-rewards-service:test make docker-build
