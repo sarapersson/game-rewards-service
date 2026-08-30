@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local test-runtime-resilience test-runtime-resilience-local vuln check ci run run-worker build clean docker-build docker-build-arm64 stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
+.PHONY: help fmt fmt-check mod-tidy-check vet test test-race test-integration test-integration-local test-runtime-resilience test-runtime-resilience-local vuln check ci run run-worker build clean docker-build stack-up stack-down stack-logs db-up db-down db-reset db-logs migrate-up migrate-status db-check
 
 BIN_DIR := bin
 API_BIN := $(BIN_DIR)/api
@@ -70,11 +70,8 @@ build: ## Build API and worker binaries
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR)
 
-docker-build: ## Build the Docker image for the current platform
+docker-build: ## Build the Docker image
 	docker build --pull -t $(DOCKER_IMAGE) .
-
-docker-build-arm64: ## Build the linux/arm64 deployment image
-	docker build --pull --platform linux/arm64 -t $(DOCKER_IMAGE) .
 
 stack-up: ## Build and start PostgreSQL, API, and worker
 	$(MAKE) docker-build DOCKER_IMAGE="$(DOCKER_IMAGE)"
