@@ -1,11 +1,8 @@
 # syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
-FROM --platform=$BUILDPLATFORM golang:1.27.0-trixie@sha256:ae28539d2ef595b9a2930dd7f031d9592376829dc0eae7cb869559f7d5812c3a AS build
+FROM golang:1.27.0-trixie@sha256:ae28539d2ef595b9a2930dd7f031d9592376829dc0eae7cb869559f7d5812c3a AS build
 
 ENV GOTOOLCHAIN=local
-
-ARG TARGETOS
-ARG TARGETARCH
 
 WORKDIR /src
 
@@ -24,20 +21,20 @@ RUN expected="$(awk '$1 == "go" { print "go" $2; exit }' go.mod)" && \
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
+RUN CGO_ENABLED=0 go build \
     -mod=readonly \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/api \
     ./cmd/api && \
-    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
+    CGO_ENABLED=0 go build \
     -mod=readonly \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/worker \
     ./cmd/worker
 
-FROM scratch AS runtime
+FROM debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
 
 ENV HTTP_ADDR=:8080 \
     WORKER_ADMIN_ADDR=:8081
