@@ -88,7 +88,7 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
-	workerID := newWorkerID(cfg.ServiceName)
+	workerID := newWorkerID()
 
 	store, err := outbox.NewPostgresStore(dbPool, cfg.Database.QueryTimeout)
 	if err != nil {
@@ -327,15 +327,11 @@ func stopComponents(
 	return errors.Join(shutdownErr, componentErr)
 }
 
-func newWorkerID(serviceName string) string {
+func newWorkerID() string {
 	var instanceID [workerInstanceIDBytes]byte
 	rand.Read(instanceID[:])
 
-	return fmt.Sprintf(
-		"%s-worker-%s",
-		serviceName,
-		hex.EncodeToString(instanceID[:]),
-	)
+	return "worker-" + hex.EncodeToString(instanceID[:])
 }
 
 func newLogger(cfg config.WorkerConfig) *slog.Logger {
