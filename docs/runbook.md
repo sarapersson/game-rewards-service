@@ -184,7 +184,7 @@ The service does not run automatic cleanup jobs.
 
 Only records with a stored response older than 24 hours are candidates for routine cleanup. The cutoff is derived from `created_at`; there is no separate persisted expiry timestamp.
 
-Request handling does not apply an expiry check, so a retained record continues to replay after the 24-hour cleanup threshold until it is deleted. Deleting one removes its stored deterministic replay history. A later request can reserve the same key again and is evaluated against current business state rather than replaying the deleted response.
+Request handling does not apply an expiry check, so a retained record continues to replay after the 24-hour cleanup threshold until it is deleted. Deleting one removes its stored deterministic replay history. Cleanup may overlap request handling: if a request has already observed the retained key but the completed row is deleted before replay reads it, the request retries the reservation and is evaluated against current business state rather than returning an internal error. A later request is likewise evaluated against current business state once the retained history is gone.
 
 Inspect first:
 

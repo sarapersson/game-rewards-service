@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -648,6 +649,123 @@ func TestCreateClaimPersistenceReplaysSameKeySameRequestConcurrently(t *testing.
 	}
 }
 
+func TestCreateClaimPersistenceRetriesReservationWhenCleanupDeletesRetainedRecord(t *testing.T) {
+	pool := openIntegrationPool(t)
+	service := mustNewIntegrationService(t, pool, 5*time.Second)
+
+	testName := integrationTestName(t)
+	playerID := "player-" + testName
+	campaignID := "campaign-" + testName
+	rewardID := "reward-" + testName
+	cmd := newIntegrationCreateClaimParams(t, "claim-key-"+testName, playerID, campaignID, rewardID)
+	cleanupIntegrationCreateClaimData(t, pool, playerID, campaignID, rewardID, cmd)
+
+	created, err := service.createClaim(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("initial CreateClaim returned error: %v", err)
+	}
+	if created.StatusCode != createClaimStatusCreated {
+		t.Fatalf("initial status = %d, want %d", created.StatusCode, createClaimStatusCreated)
+	}
+
+	ageTag, err := pool.Exec(
+		context.Background(),
+		`UPDATE reward_claim_idempotency_keys
+SET created_at = now() - interval '25 hours'
+WHERE key_hash = $1`,
+		cmd.KeyHash[:],
+	)
+	if err != nil {
+		t.Fatalf("age idempotency record for retention: %v", err)
+	}
+	if ageTag.RowsAffected() != 1 {
+		t.Fatalf("aging idempotency record affected %d rows, want 1", ageTag.RowsAffected())
+	}
+
+	tracer := newReservationConflictTracer()
+	requestPool := openIntegrationPoolWithTracer(t, tracer)
+	t.Cleanup(tracer.release)
+	requestService := mustNewIntegrationService(t, requestPool, 10*time.Second)
+
+	type createClaimOutcome struct {
+		result CreateClaimResult
+		err    error
+	}
+	outcome := make(chan createClaimOutcome, 1)
+	go func() {
+		result, err := requestService.createClaim(context.Background(), cmd)
+		outcome <- createClaimOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-tracer.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for conflicting idempotency reservation")
+	}
+
+	tag, err := pool.Exec(
+		context.Background(),
+		`DELETE FROM reward_claim_idempotency_keys
+WHERE key_hash = $1
+  AND response_status IS NOT NULL
+  AND created_at < now() - interval '24 hours'`,
+		cmd.KeyHash[:],
+	)
+	if err != nil {
+		t.Fatalf("delete retained idempotency record: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("retention delete affected %d rows, want 1", tag.RowsAffected())
+	}
+
+	tracer.release()
+
+	var retry createClaimOutcome
+	select {
+	case retry = <-outcome:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for CreateClaim after retention delete")
+	}
+	if retry.err != nil {
+		t.Fatalf("CreateClaim after retention delete returned error: %v", retry.err)
+	}
+	if retry.result.StatusCode != createClaimStatusConflict {
+		t.Fatalf("status after retention delete = %d, want %d", retry.result.StatusCode, createClaimStatusConflict)
+	}
+	if retry.result.Replayed {
+		t.Fatal("response after retention delete should be evaluated against current state, not replayed")
+	}
+
+	var body errorResponse
+	if err := json.Unmarshal(retry.result.ResponseBody, &body); err != nil {
+		t.Fatalf("unmarshal response after retention delete: %v; body = %s", err, retry.result.ResponseBody)
+	}
+	if body.Error.Code != duplicateClaimErrorCode {
+		t.Fatalf("error code after retention delete = %q, want %q", body.Error.Code, duplicateClaimErrorCode)
+	}
+
+	replay, err := service.createClaim(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("replay after re-reservation returned error: %v", err)
+	}
+	if replay.StatusCode != createClaimStatusConflict {
+		t.Fatalf("replay status = %d, want %d", replay.StatusCode, createClaimStatusConflict)
+	}
+	if !replay.Replayed {
+		t.Fatal("replay after re-reservation should be marked replayed")
+	}
+	if !bytes.Equal(replay.ResponseBody, retry.result.ResponseBody) {
+		t.Fatalf("replay body = %s, want %s", replay.ResponseBody, retry.result.ResponseBody)
+	}
+
+	if got := countRewardClaims(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("reward claim count = %d, want 1", got)
+	}
+	if got := countRewardClaimedOutboxEventsForIdentity(t, pool, playerID, campaignID, rewardID); got != 1 {
+		t.Fatalf("outbox event count = %d, want 1", got)
+	}
+}
+
 func TestCreateClaimPersistenceTreatsCommittedIncompleteKeyAsInternal(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1111,6 +1229,12 @@ func mustNewIntegrationService(t *testing.T, pool *pgxpool.Pool, queryTimeout ti
 func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
+	return openIntegrationPoolWithTracer(t, nil)
+}
+
+func openIntegrationPoolWithTracer(t *testing.T, tracer pgx.QueryTracer) *pgxpool.Pool {
+	t.Helper()
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if strings.TrimSpace(databaseURL) == "" {
 		databaseURL = defaultIntegrationDatabaseURL
@@ -1123,6 +1247,7 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal("parse postgres pool config: invalid DATABASE_URL")
 	}
+	poolConfig.ConnConfig.Tracer = tracer
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -1135,6 +1260,54 @@ func openIntegrationPool(t *testing.T) *pgxpool.Pool {
 
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+type reservationConflictTracer struct {
+	blockOnce   sync.Once
+	releaseOnce sync.Once
+	blocked     chan struct{}
+	releaseCh   chan struct{}
+}
+
+type reservationConflictTraceKey struct{}
+
+func newReservationConflictTracer() *reservationConflictTracer {
+	return &reservationConflictTracer{
+		blocked:   make(chan struct{}),
+		releaseCh: make(chan struct{}),
+	}
+}
+
+func (r *reservationConflictTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if !strings.Contains(data.SQL, "INSERT INTO reward_claim_idempotency_keys") {
+		return ctx
+	}
+	if !strings.Contains(data.SQL, "ON CONFLICT (key_hash) DO NOTHING") {
+		return ctx
+	}
+
+	return context.WithValue(ctx, reservationConflictTraceKey{}, true)
+}
+
+func (r *reservationConflictTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	isReservation, _ := ctx.Value(reservationConflictTraceKey{}).(bool)
+	if !isReservation || data.Err != nil || data.CommandTag.RowsAffected() != 0 {
+		return
+	}
+
+	r.blockOnce.Do(func() {
+		close(r.blocked)
+		select {
+		case <-r.releaseCh:
+		case <-ctx.Done():
+		}
+	})
+}
+
+func (r *reservationConflictTracer) release() {
+	r.releaseOnce.Do(func() {
+		close(r.releaseCh)
+	})
 }
 
 func countRewardClaims(t *testing.T, pool *pgxpool.Pool, playerID, campaignID, rewardID string) int {
