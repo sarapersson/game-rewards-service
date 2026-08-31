@@ -25,15 +25,24 @@ func (s *Service) createClaim(ctx context.Context, params createClaimParams) (Cr
 	}
 	defer s.rollbackTransaction(tx)
 
-	reserved, err := tryReserveIdempotencyKey(queryCtx, tx, params)
-	if err != nil {
-		return CreateClaimResult{}, err
-	}
-
-	if !reserved {
-		result, err := replayIdempotentClaim(queryCtx, tx, params)
+	for {
+		reserved, err := tryReserveIdempotencyKey(queryCtx, tx, params)
 		if err != nil {
 			return CreateClaimResult{}, err
+		}
+		if reserved {
+			break
+		}
+
+		result, found, err := tryLoadIdempotentClaimResult(queryCtx, tx, params)
+		if err != nil {
+			return CreateClaimResult{}, err
+		}
+		if !found {
+			// Routine retention can delete a completed row after the reservation
+			// insert observes a conflict but before replay reads it. Retry the
+			// reservation so the request is evaluated against current state.
+			continue
 		}
 
 		if err := tx.Commit(queryCtx); err != nil {
@@ -105,7 +114,7 @@ ON CONFLICT (key_hash) DO NOTHING`
 	return tag.RowsAffected() == 1, nil
 }
 
-func replayIdempotentClaim(ctx context.Context, tx pgx.Tx, params createClaimParams) (CreateClaimResult, error) {
+func tryLoadIdempotentClaimResult(ctx context.Context, tx pgx.Tx, params createClaimParams) (CreateClaimResult, bool, error) {
 	const query = `
 SELECT player_id, campaign_id, reward_id, response_status, response_body
 FROM reward_claim_idempotency_keys
@@ -127,30 +136,34 @@ WHERE key_hash = $1`
 		&responseBody,
 	)
 	if err != nil {
-		return CreateClaimResult{}, mapPostgresError(ctx, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CreateClaimResult{}, false, nil
+		}
+
+		return CreateClaimResult{}, false, mapPostgresError(ctx, err)
 	}
 
 	if !responseStatus.Valid || len(responseBody) == 0 {
-		return CreateClaimResult{}, fmt.Errorf("committed idempotency key missing stored response: %w", ErrInternal)
+		return CreateClaimResult{}, false, fmt.Errorf("committed idempotency key missing stored response: %w", ErrInternal)
 	}
 
 	if playerID != params.PlayerID || campaignID != params.CampaignID || rewardID != params.RewardID {
-		return CreateClaimResult{}, ErrIdempotencyKeyReused
+		return CreateClaimResult{}, false, ErrIdempotencyKeyReused
 	}
 
 	statusCode := int(responseStatus.Int64)
 	if statusCode != createClaimStatusCreated && statusCode != createClaimStatusConflict {
-		return CreateClaimResult{}, fmt.Errorf("unexpected stored reward claim response status %d: %w", statusCode, ErrInternal)
+		return CreateClaimResult{}, false, fmt.Errorf("unexpected stored reward claim response status %d: %w", statusCode, ErrInternal)
 	}
 	if !utf8.Valid(responseBody) || !json.Valid(responseBody) {
-		return CreateClaimResult{}, fmt.Errorf("invalid stored reward claim response body: %w", ErrInternal)
+		return CreateClaimResult{}, false, fmt.Errorf("invalid stored reward claim response body: %w", ErrInternal)
 	}
 
 	return CreateClaimResult{
 		StatusCode:   statusCode,
 		ResponseBody: responseBody,
 		Replayed:     true,
-	}, nil
+	}, true, nil
 }
 
 func completeCreatedClaim(ctx context.Context, tx pgx.Tx, params createClaimParams, claim claim) (CreateClaimResult, error) {

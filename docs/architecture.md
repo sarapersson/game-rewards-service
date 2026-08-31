@@ -44,7 +44,7 @@ The design deliberately separates client retry idempotency, business-level rewar
 
 The idempotency row itself is the reservation while the reward-claim transaction is open. A successful transaction fills the deterministic response before commit; a committed row without a stored response is therefore an invariant failure and is surfaced as `500 internal_error`, not as a retryable client conflict.
 
-Reward-claim transactions explicitly use PostgreSQL `READ COMMITTED`. The reservation insert uses the unique `key_hash` as the concurrency boundary; after a conflicting reservation resolves, replay reads the immutable stored response with an ordinary `SELECT` instead of taking an additional row lock.
+Reward-claim transactions explicitly use PostgreSQL `READ COMMITTED`. The reservation insert uses the unique `key_hash` as the concurrency boundary; after a conflicting reservation resolves, replay reads the immutable stored response with an ordinary `SELECT` instead of taking an additional row lock. Routine retention can delete a completed record between those two statements; if replay then finds no row, the transaction retries the reservation so the request is evaluated against current business state after the retained key history is gone.
 
 **Business duplicates** use the database constraint:
 
