@@ -31,17 +31,13 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
-func (r *statusRecorder) Unwrap() http.ResponseWriter {
-	return r.ResponseWriter
-}
-
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.wroteHeader {
 		return
 	}
+	r.ResponseWriter.WriteHeader(status)
 	r.status = status
 	r.wroteHeader = true
-	r.ResponseWriter.WriteHeader(status)
 }
 
 func (r *statusRecorder) Write(body []byte) (int, error) {
@@ -81,52 +77,71 @@ func NewServer(
 }
 
 func middleware(next http.Handler, logger *slog.Logger, observer RequestObserver) http.Handler {
-	return secureHeaders(requestLogger(recoverer(next, logger), logger, observer))
-}
-
-func recoverer(next http.Handler, logger *slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				logger.ErrorContext(
-					r.Context(),
-					"worker admin panic recovered",
-					slog.String("panic_type", fmt.Sprintf("%T", recovered)),
-					slog.String("stack", string(debug.Stack())),
-				)
-				writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
+	return secureHeaders(requestLogger(next, logger, observer))
 }
 
 func requestLogger(next http.Handler, logger *slog.Logger, observer RequestObserver) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		defer func() {
+			abort := handleRecoveredPanic(recorder, r, logger, recover())
+
+			duration := time.Since(started)
+			route := routeName(r)
+			if observer != nil {
+				observer.ObserveRequest(route, r.Method, recorder.status, duration)
+			}
+
+			level := slog.LevelDebug
+			if recorder.status >= http.StatusBadRequest {
+				level = slog.LevelWarn
+			}
+			logger.Log(
+				r.Context(),
+				level,
+				"worker admin request",
+				slog.String("method", r.Method),
+				slog.String("route", route),
+				slog.Int("status", recorder.status),
+				slog.Int64("duration_ms", duration.Milliseconds()),
+			)
+
+			if abort {
+				panic(http.ErrAbortHandler)
+			}
+		}()
+
 		next.ServeHTTP(recorder, r)
-
-		duration := time.Since(started)
-		route := routeName(r)
-		if observer != nil {
-			observer.ObserveRequest(route, r.Method, recorder.status, duration)
-		}
-
-		level := slog.LevelDebug
-		if recorder.status >= http.StatusBadRequest {
-			level = slog.LevelWarn
-		}
-		logger.Log(
-			r.Context(),
-			level,
-			"worker admin request",
-			slog.String("method", r.Method),
-			slog.String("route", route),
-			slog.Int("status", recorder.status),
-			slog.Int64("duration_ms", duration.Milliseconds()),
-		)
 	})
+}
+
+func handleRecoveredPanic(recorder *statusRecorder, r *http.Request, logger *slog.Logger, recovered any) bool {
+	if recovered == nil {
+		return false
+	}
+
+	if recovered == http.ErrAbortHandler {
+		recorder.status = 0
+		return true
+	}
+
+	logger.ErrorContext(
+		r.Context(),
+		"worker admin panic recovered",
+		slog.String("panic_type", fmt.Sprintf("%T", recovered)),
+		slog.String("stack", string(debug.Stack())),
+	)
+
+	if recorder.wroteHeader {
+		recorder.status = 0
+		return true
+	}
+
+	recorder.Header().Del("Content-Length")
+	writeError(recorder, http.StatusInternalServerError, "internal_error", "Internal server error")
+	return false
 }
 
 func secureHeaders(next http.Handler) http.Handler {

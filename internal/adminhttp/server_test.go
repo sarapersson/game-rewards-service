@@ -137,3 +137,95 @@ func TestServerObservesRecoveredPanicAsInternalError(t *testing.T) {
 		t.Fatalf("unexpected observation: %#v", observer)
 	}
 }
+
+func TestServerClearsStaleContentLengthForPanic(t *testing.T) {
+	server := NewServer(
+		config.HTTPConfig{Addr: ":0"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "1")
+			panic("boom")
+		}),
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, routeMetrics, nil))
+
+	if got := recorder.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want cleared", got)
+	}
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"internal_error"`) {
+		t.Fatalf("response body = %q, want internal error envelope", recorder.Body.String())
+	}
+}
+
+func TestServerPreservesErrAbortHandler(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	observer := &recordingObserver{}
+	server := NewServer(
+		config.HTTPConfig{Addr: ":0"},
+		logger,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }),
+		observer,
+	)
+
+	defer func() {
+		recovered := recover()
+		if recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic = %v, want http.ErrAbortHandler", recovered)
+		}
+		if observer.status != 0 {
+			t.Fatalf("observed status = %d, want 0", observer.status)
+		}
+		if strings.Contains(logs.String(), "worker admin panic recovered") {
+			t.Fatalf("logs = %q, want no recovered panic log", logs.String())
+		}
+	}()
+
+	server.Handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, routeMetrics, nil),
+	)
+	t.Fatal("expected http.ErrAbortHandler panic")
+}
+
+func TestServerAbortsAfterResponseWrite(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	observer := &recordingObserver{}
+	recorder := httptest.NewRecorder()
+	server := NewServer(
+		config.HTTPConfig{Addr: ":0"},
+		logger,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("partial"))
+			panic("boom")
+		}),
+		observer,
+	)
+
+	defer func() {
+		recovered := recover()
+		if recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic = %v, want http.ErrAbortHandler", recovered)
+		}
+		if recorder.Code != http.StatusAccepted || recorder.Body.String() != "partial" {
+			t.Fatalf("response = (%d, %q), want (202, partial)", recorder.Code, recorder.Body.String())
+		}
+		if observer.status != 0 {
+			t.Fatalf("observed status = %d, want 0", observer.status)
+		}
+		if !strings.Contains(logs.String(), "worker admin panic recovered") {
+			t.Fatalf("logs = %q, want recovered panic log", logs.String())
+		}
+	}()
+
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, routeMetrics, nil))
+	t.Fatal("expected http.ErrAbortHandler panic")
+}
