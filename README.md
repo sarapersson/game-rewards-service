@@ -106,19 +106,20 @@ make stack-down
 
 The three identifiers are trimmed, required, valid UTF-8, limited to 128 Unicode characters, and must not contain NUL. The idempotency key is trimmed, limited to 255 bytes, and rejects ASCII control characters and DEL. Request bodies must be valid UTF-8 and are limited to 64 KiB; unknown JSON fields and multiple JSON values are rejected.
 
-| Scenario                                       | Result                                               |
-| ---------------------------------------------- | ---------------------------------------------------- |
-| New valid claim                                | `201 Created`                                        |
-| Same key + same accepted request               | stored response replay while the record is retained  |
-| Same key + different accepted request          | `409 idempotency_key_reused` while retained          |
-| Different key + same player/campaign/reward    | `409 reward_already_claimed`                         |
-| Invalid input                                  | `400`, `413`, or `415`                               |
-| Known PostgreSQL availability failure          | `503 service_unavailable`                            |
-| Unexpected internal failure                    | `500 internal_error`                                 |
+| Scenario                                                | Result                                              |
+| ------------------------------------------------------- | --------------------------------------------------- |
+| New valid claim                                         | `201 Created`                                       |
+| Same key + same accepted request                        | stored response replay while the record is retained |
+| Same key + different accepted request                   | `409 idempotency_key_reused` while retained         |
+| Different key + same player/campaign/reward             | `409 reward_already_claimed`                        |
+| Invalid input                                           | `400`, `413`, or `415`                              |
+| Request line or initial headers exceed transport limits | `431`                                               |
+| Known PostgreSQL availability failure                   | `503 service_unavailable`                           |
+| Unexpected internal failure                             | `500 internal_error`                                |
 
 Idempotency records with stored responses become eligible for routine cleanup 24 hours after creation. The service does not run automatic cleanup; once a record is deleted, its key-level replay and reuse history is no longer available.
 
-Error responses from `POST /v1/reward-claims` use the stable envelope:
+Application-generated error responses from `POST /v1/reward-claims` use the stable envelope:
 
 ```json
 {
@@ -129,7 +130,7 @@ Error responses from `POST /v1/reward-claims` use the stable envelope:
 }
 ```
 
-Every API response includes `X-Request-ID`. Clients may provide a bounded safe value or let the service generate one.
+Application responses include `X-Request-ID`. Clients may provide a bounded safe value or let the service generate one. Transport-level `431` responses can be emitted before application middleware runs, so the JSON error envelope and `X-Request-ID` are not guaranteed for those responses.
 
 The full client-facing contract is documented in [`openapi.yaml`](openapi.yaml).
 

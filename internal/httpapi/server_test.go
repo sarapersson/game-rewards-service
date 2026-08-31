@@ -42,6 +42,10 @@ func TestNewServerUsesConfiguredSettings(t *testing.T) {
 	if server.MaxHeaderBytes != wantMaxHeaderBytes {
 		t.Fatalf("expected max header bytes %d, got %d", wantMaxHeaderBytes, server.MaxHeaderBytes)
 	}
+	const wantMaxHeaderValueCount = 500
+	if server.MaxHeaderValueCount != wantMaxHeaderValueCount {
+		t.Fatalf("expected max header value count %d, got %d", wantMaxHeaderValueCount, server.MaxHeaderValueCount)
+	}
 	if server.Handler == nil {
 		t.Fatal("expected handler to be set")
 	}
