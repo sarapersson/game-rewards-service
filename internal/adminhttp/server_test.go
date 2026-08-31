@@ -1,11 +1,13 @@
 package adminhttp
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +65,37 @@ func TestNewServerWiresWorkerAdminEndpoints(t *testing.T) {
 		if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 			t.Fatalf("%s X-Content-Type-Options = %q", path, got)
 		}
+	}
+}
+
+func TestNewServerRoutesServerErrorsThroughLogger(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(
+		&logs,
+		&slog.HandlerOptions{Level: slog.LevelError},
+	)).With(slog.String("component", "adminhttp-test"))
+
+	server := NewServer(
+		config.HTTPConfig{Addr: ":0"},
+		logger,
+		nil,
+		nil,
+	)
+	if server.ErrorLog == nil {
+		t.Fatal("expected error logger to be set")
+	}
+
+	server.ErrorLog.Print("transport failure")
+
+	output := logs.String()
+	if !strings.Contains(output, "transport failure") {
+		t.Fatalf("error log output = %q, want transport failure message", output)
+	}
+	if !strings.Contains(output, "level=ERROR") {
+		t.Fatalf("error log output = %q, want ERROR level", output)
+	}
+	if !strings.Contains(output, "component=adminhttp-test") {
+		t.Fatalf("error log output = %q, want injected logger attributes", output)
 	}
 }
 

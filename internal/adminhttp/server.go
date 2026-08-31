@@ -70,6 +70,7 @@ func NewServer(
 	return &http.Server{
 		Addr:                cfg.Addr,
 		Handler:             middleware(mux, logger, observer),
+		ErrorLog:            slog.NewLogLogger(logger.Handler(), slog.LevelError),
 		ReadTimeout:         cfg.ReadTimeout,
 		ReadHeaderTimeout:   cfg.ReadHeaderTimeout,
 		WriteTimeout:        cfg.WriteTimeout,

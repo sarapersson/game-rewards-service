@@ -51,6 +51,7 @@ func NewServer(
 	return &http.Server{
 		Addr:                cfg.Addr,
 		Handler:             newRouter(logger, rewardClaims, observability, readinessChecks...),
+		ErrorLog:            slog.NewLogLogger(logger.Handler(), slog.LevelError),
 		ReadTimeout:         cfg.ReadTimeout,
 		ReadHeaderTimeout:   cfg.ReadHeaderTimeout,
 		WriteTimeout:        cfg.WriteTimeout,

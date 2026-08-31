@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +51,40 @@ func TestNewServerUsesConfiguredSettings(t *testing.T) {
 	}
 	if server.Handler == nil {
 		t.Fatal("expected handler to be set")
+	}
+}
+
+func TestNewServerRoutesServerErrorsThroughLogger(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(
+		&logs,
+		&slog.HandlerOptions{Level: slog.LevelError},
+	)).With(slog.String("component", "httpapi-test"))
+
+	server, err := NewServer(
+		config.HTTPConfig{Addr: ":0"},
+		logger,
+		stubRewardClaimService{},
+		ServerObservability{},
+	)
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	if server.ErrorLog == nil {
+		t.Fatal("expected error logger to be set")
+	}
+
+	server.ErrorLog.Print("transport failure")
+
+	output := logs.String()
+	if !strings.Contains(output, "transport failure") {
+		t.Fatalf("error log output = %q, want transport failure message", output)
+	}
+	if !strings.Contains(output, "level=ERROR") {
+		t.Fatalf("error log output = %q, want ERROR level", output)
+	}
+	if !strings.Contains(output, "component=httpapi-test") {
+		t.Fatalf("error log output = %q, want injected logger attributes", output)
 	}
 }
 
