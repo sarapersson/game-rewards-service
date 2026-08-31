@@ -91,7 +91,7 @@ func TestMiddlewareStoresRequestIDInContext(t *testing.T) {
 	}
 }
 
-func TestRecovererReturnsJSONInternalError(t *testing.T) {
+func TestMiddlewareReturnsJSONInternalErrorForPanic(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
 
@@ -107,6 +107,85 @@ func TestRecovererReturnsJSONInternalError(t *testing.T) {
 
 	assertJSONContentType(t, rec)
 	assertErrorResponse(t, rec, errorCodeInternal, "Internal server error")
+}
+
+func TestMiddlewareClearsStaleContentLengthForPanic(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+
+	handler := withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1")
+		panic("boom")
+	}), testLogger())
+
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want cleared", got)
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	assertErrorResponse(t, rec, errorCodeInternal, "Internal server error")
+}
+
+func TestMiddlewarePreservesErrAbortHandler(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	observer := &recordingRequestObserver{}
+	handler := withMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}), logger, observer)
+
+	defer func() {
+		recovered := recover()
+		if recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic = %v, want http.ErrAbortHandler", recovered)
+		}
+		if observer.status != 0 {
+			t.Fatalf("observed status = %d, want 0", observer.status)
+		}
+		if strings.Contains(logs.String(), "panic recovered") {
+			t.Fatalf("logs = %q, want no recovered panic log", logs.String())
+		}
+	}()
+
+	handler.ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, routeRewardClaims, nil),
+	)
+	t.Fatal("expected http.ErrAbortHandler panic")
+}
+
+func TestMiddlewareAbortsAfterResponseWrite(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	observer := &recordingRequestObserver{}
+	rec := httptest.NewRecorder()
+	handler := withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("partial"))
+		panic("boom")
+	}), logger, observer)
+
+	defer func() {
+		recovered := recover()
+		if recovered != http.ErrAbortHandler {
+			t.Fatalf("recovered panic = %v, want http.ErrAbortHandler", recovered)
+		}
+		if rec.Code != http.StatusAccepted || rec.Body.String() != "partial" {
+			t.Fatalf("response = (%d, %q), want (202, partial)", rec.Code, rec.Body.String())
+		}
+		if observer.status != 0 {
+			t.Fatalf("observed status = %d, want 0", observer.status)
+		}
+		if !strings.Contains(logs.String(), "panic recovered") {
+			t.Fatalf("logs = %q, want recovered panic log", logs.String())
+		}
+	}()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, routeRewardClaims, nil))
+	t.Fatal("expected http.ErrAbortHandler panic")
 }
 
 func TestMiddlewareRejectsInvalidRequestID(t *testing.T) {

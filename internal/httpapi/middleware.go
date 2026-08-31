@@ -24,18 +24,14 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
-func (r *statusRecorder) Unwrap() http.ResponseWriter {
-	return r.ResponseWriter
-}
-
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.wroteHeader {
 		return
 	}
 
+	r.ResponseWriter.WriteHeader(status)
 	r.status = status
 	r.wroteHeader = true
-	r.ResponseWriter.WriteHeader(status)
 }
 
 func (r *statusRecorder) Write(body []byte) (int, error) {
@@ -49,33 +45,9 @@ func (r *statusRecorder) Write(body []byte) (int, error) {
 func withMiddleware(handler http.Handler, logger *slog.Logger, observers ...RequestObserver) http.Handler {
 	return requestID(
 		requestLogger(logger, observers...)(
-			recoverer(logger)(
-				secureHeaders(handler),
-			),
+			secureHeaders(handler),
 		),
 	)
-}
-
-func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					logger.ErrorContext(
-						r.Context(),
-						"panic recovered",
-						slog.String("panic_type", fmt.Sprintf("%T", recovered)),
-						slog.String("request_id", requestIDFromRequest(r)),
-						slog.String("stack", string(debug.Stack())),
-					)
-
-					writeError(w, http.StatusInternalServerError, errorCodeInternal, "Internal server error")
-				}
-			}()
-
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 func requestID(next http.Handler) http.Handler {
@@ -110,40 +82,76 @@ func requestLogger(logger *slog.Logger, observers ...RequestObserver) func(http.
 				status:         http.StatusOK,
 			}
 
-			next.ServeHTTP(rec, r)
+			defer func() {
+				abort := handleRecoveredPanic(rec, r, logger, recover())
 
-			if !rec.wroteHeader && r.Context().Err() != nil {
-				// No response was written after the request context ended; do not report an implicit 200.
-				rec.status = 0
-			}
-
-			duration := time.Since(started)
-			route := routeName(r)
-			for _, observer := range observers {
-				if observer != nil {
-					observer.ObserveRequest(route, r.Method, rec.status, duration)
+				if !rec.wroteHeader && r.Context().Err() != nil {
+					// No response was written after the request context ended; do not report an implicit 200.
+					rec.status = 0
 				}
-			}
 
-			level := slog.LevelInfo
-			if rec.status < http.StatusBadRequest && isAdminRoute(route) {
-				level = slog.LevelDebug
-			}
+				duration := time.Since(started)
+				route := routeName(r)
+				for _, observer := range observers {
+					if observer != nil {
+						observer.ObserveRequest(route, r.Method, rec.status, duration)
+					}
+				}
 
-			logger.Log(
-				r.Context(),
-				level,
-				"http request",
-				slog.String("request_id", requestIDFromRequest(r)),
-				slog.String("method", r.Method),
-				slog.String("route", route),
-				slog.Int("status", rec.status),
-				slog.Int64("duration_ms", duration.Milliseconds()),
-				slog.String("remote_addr", clientIP(r)),
-				slog.String("user_agent", truncateString(r.UserAgent(), maxUserAgentLogLen)),
-			)
+				level := slog.LevelInfo
+				if rec.status < http.StatusBadRequest && isAdminRoute(route) {
+					level = slog.LevelDebug
+				}
+
+				logger.Log(
+					r.Context(),
+					level,
+					"http request",
+					slog.String("request_id", requestIDFromRequest(r)),
+					slog.String("method", r.Method),
+					slog.String("route", route),
+					slog.Int("status", rec.status),
+					slog.Int64("duration_ms", duration.Milliseconds()),
+					slog.String("remote_addr", clientIP(r)),
+					slog.String("user_agent", truncateString(r.UserAgent(), maxUserAgentLogLen)),
+				)
+
+				if abort {
+					panic(http.ErrAbortHandler)
+				}
+			}()
+
+			next.ServeHTTP(rec, r)
 		})
 	}
+}
+
+func handleRecoveredPanic(rec *statusRecorder, r *http.Request, logger *slog.Logger, recovered any) bool {
+	if recovered == nil {
+		return false
+	}
+
+	if recovered == http.ErrAbortHandler {
+		rec.status = 0
+		return true
+	}
+
+	logger.ErrorContext(
+		r.Context(),
+		"panic recovered",
+		slog.String("panic_type", fmt.Sprintf("%T", recovered)),
+		slog.String("request_id", requestIDFromRequest(r)),
+		slog.String("stack", string(debug.Stack())),
+	)
+
+	if rec.wroteHeader {
+		rec.status = 0
+		return true
+	}
+
+	rec.Header().Del("Content-Length")
+	writeError(rec, http.StatusInternalServerError, errorCodeInternal, "Internal server error")
+	return false
 }
 
 func sanitizeRequestID(value string) string {
