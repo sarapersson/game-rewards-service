@@ -25,11 +25,10 @@ func TestRunStopsBeforeStartupWhenContextAlreadyCanceled(t *testing.T) {
 }
 
 func TestNewWorkerID(t *testing.T) {
-	const serviceName = "game-rewards-service"
-	const prefix = serviceName + "-worker-"
+	const prefix = "worker-"
 
-	firstID := newWorkerID(serviceName)
-	secondID := newWorkerID(serviceName)
+	firstID := newWorkerID()
+	secondID := newWorkerID()
 
 	if firstID == secondID {
 		t.Fatalf(
