@@ -127,9 +127,11 @@ paths:
 
         '431':
           description: |
-            The request line and headers exceed the server's 32 KiB parsing budget.
-            This transport-level rejection occurs before application middleware runs,
-            so the application JSON error envelope and X-Request-ID are not guaranteed.
+            The request line and initial request headers exceed the server's 32 KiB
+            parsing budget, or the initial request headers exceed the server's limit
+            of 500 parsed header values. This transport-level rejection occurs before
+            application middleware runs, so the application JSON error envelope and
+            X-Request-ID are not guaranteed.
 
         '500':
           description: Unexpected internal, schema, invariant, or programming failure.

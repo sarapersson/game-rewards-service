@@ -20,7 +20,7 @@ The service does **not** implement authentication or authorization, rate limitin
 
 ## Implemented safeguards
 
-* Requests are bounded and strictly decoded: valid UTF-8, a 64 KiB body limit, unknown-field rejection, single-JSON-value enforcement, bounded reward identifiers, and exactly one validated `Idempotency-Key`.
+* HTTP request parsing is bounded: the request line and headers have a 32 KiB parsing budget and a limit of 500 parsed header values. Reward-claim bodies have a 64 KiB limit and require valid UTF-8, unknown-field rejection, single-JSON-value enforcement, bounded reward identifiers, and exactly one validated `Idempotency-Key`.
 * Raw idempotency keys are SHA-256 hashed before persistence.
 * PostgreSQL constraints enforce critical invariants, and claim creation, storage of the deterministic idempotency response, and outbox creation commit atomically.
 * Known dependency-availability failures are distinguished from unexpected internal, schema, and invariant failures; low-level database and network details are not returned to clients or exposed by worker store failure logs.

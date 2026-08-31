@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	routeLivez            = "/livez"
-	routeReadyz           = "/readyz"
-	routeMetrics          = "/metrics"
-	maxRequestHeaderBytes = 32 * 1024
+	routeLivez                 = "/livez"
+	routeReadyz                = "/readyz"
+	routeMetrics               = "/metrics"
+	maxRequestHeaderBytes      = 32 * 1024
+	maxRequestHeaderValueCount = 500
 )
 
 type RequestObserver interface {
@@ -67,13 +68,14 @@ func NewServer(
 	mux.HandleFunc("/", notFound)
 
 	return &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           middleware(mux, logger, observer),
-		ReadTimeout:       cfg.ReadTimeout,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    maxRequestHeaderBytes,
+		Addr:                cfg.Addr,
+		Handler:             middleware(mux, logger, observer),
+		ReadTimeout:         cfg.ReadTimeout,
+		ReadHeaderTimeout:   cfg.ReadHeaderTimeout,
+		WriteTimeout:        cfg.WriteTimeout,
+		IdleTimeout:         cfg.IdleTimeout,
+		MaxHeaderBytes:      maxRequestHeaderBytes,
+		MaxHeaderValueCount: maxRequestHeaderValueCount,
 	}
 }
 

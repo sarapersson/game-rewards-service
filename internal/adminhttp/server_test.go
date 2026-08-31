@@ -46,6 +46,10 @@ func TestNewServerWiresWorkerAdminEndpoints(t *testing.T) {
 	if server.MaxHeaderBytes != wantMaxHeaderBytes {
 		t.Fatalf("max header bytes = %d, want %d", server.MaxHeaderBytes, wantMaxHeaderBytes)
 	}
+	const wantMaxHeaderValueCount = 500
+	if server.MaxHeaderValueCount != wantMaxHeaderValueCount {
+		t.Fatalf("max header value count = %d, want %d", server.MaxHeaderValueCount, wantMaxHeaderValueCount)
+	}
 
 	for _, path := range []string{routeLivez, routeReadyz, routeMetrics} {
 		recorder := httptest.NewRecorder()
