@@ -8,7 +8,7 @@ DOCKER_IMAGE ?= game-rewards-service:local
 GOVULNCHECK_VERSION := v1.7.0
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
 # renovate: datasource=go depName=github.com/golang-migrate/migrate/v4 versioning=semver
-MIGRATE_VERSION := v4.19.1
+MIGRATE_VERSION := v4.20.1
 MIGRATIONS_DIR := migrations
 override LOCAL_DATABASE_URL := postgres://game_rewards:game_rewards_dev_password@localhost:5432/game_rewards?sslmode=disable
 DATABASE_URL ?= $(LOCAL_DATABASE_URL)
