@@ -5,7 +5,7 @@ API_BIN := $(BIN_DIR)/api
 WORKER_BIN := $(BIN_DIR)/worker
 DOCKER_IMAGE ?= game-rewards-service:local
 # renovate: datasource=git-tags depName=golang.org/x/vuln packageName=https://go.googlesource.com/vuln versioning=semver
-GOVULNCHECK_VERSION := v1.7.0
+GOVULNCHECK_VERSION := v1.9.0
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
 # renovate: datasource=go depName=github.com/golang-migrate/migrate/v4 versioning=semver
 MIGRATE_VERSION := v4.19.1
