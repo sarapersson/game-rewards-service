@@ -34,7 +34,7 @@ RUN CGO_ENABLED=0 go build \
     -o /out/worker \
     ./cmd/worker
 
-FROM debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
+FROM debian:13-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime
 
 ENV HTTP_ADDR=:8080 \
     WORKER_ADMIN_ADDR=:8081
